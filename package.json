@@ -1,0 +1,27 @@
+{
+  "name": "data_scraper",
+  "version": "1.0.0",
+  "main": "scrapeAndFormat.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "agent-twitter-client": "^0.0.13",
+    "axios": "^1.7.7",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "fs": "^0.0.1-security",
+    "fs-extra": "^11.2.0",
+    "p-limit": "^6.1.0",
+    "progress": "^2.0.3",
+    "puppeteer": "^23.6.0",
+    "puppeteer-cluster": "^0.24.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

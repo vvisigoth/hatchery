@@ -1,0 +1,4 @@
+.env
+node_modules/
+degenspartan_tweet_urls.txt
+degenspartanblogurls.txt
