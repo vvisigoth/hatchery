@@ -45,6 +45,12 @@ const BLOGS_FILE = "blogs.json";
 const OUTPUT_FILE = "together_ai_finetuning_data.jsonl";
 const MAX_DATA_SIZE_BYTES = 5 * 1024 * 1024 * 1024; // 5GB
 
+// Adjustable parameters
+const DESIRED_TWEETS_COUNT = 60000; // Set to desired number of tweets
+const FETCH_BATCH_SIZE = 200; // Number of tweets to fetch per batch
+const RETRY_LIMIT = 5; // Number of retries on failure
+const DELAY_BETWEEN_BATCHES_MS = 2000; // Delay between batches to handle rate limits
+
 // Helper function to load URLs from a file
 function loadUrls(filePath) {
   try {
@@ -84,41 +90,90 @@ async function scrapeTweets() {
     if (await scraper.isLoggedIn()) {
       console.log("Logged in to Twitter successfully!");
 
-      // Fetch all tweets for the user "@degenspartan"
-      const tweetsStream = scraper.getTweets("degenspartan", 2000); // Adjust the number as needed
-
+      // Initialize fetchedTweets with existing data if available
       let fetchedTweets = [];
-
-      // Load existing tweets if the file exists
       if (fs.existsSync(TWEETS_FILE)) {
         const existingData = fs.readFileSync(TWEETS_FILE, "utf-8");
         fetchedTweets = JSON.parse(existingData);
+        console.log(`Loaded ${fetchedTweets.length} existing tweets.`);
       }
 
-      // Initialize counters
-      let count = 0;
-      const maxTweets = 50; // Fetch up to 1000 new tweets. Adjust as needed.
+      // Calculate remaining tweets to fetch
+      const remainingTweets = DESIRED_TWEETS_COUNT - fetchedTweets.length;
+      if (remainingTweets <= 0) {
+        console.log(
+          `Desired tweet count of ${DESIRED_TWEETS_COUNT} already reached.`
+        );
+        return;
+      }
+
+      console.log(`Attempting to fetch ${remainingTweets} more tweets.`);
 
       // Initialize progress bar
       const bar = new ProgressBar("Fetching Tweets [:bar] :current/:total", {
-        total: maxTweets,
+        total: remainingTweets,
         width: 40,
       });
 
-      for await (const tweet of tweetsStream) {
-        if (count >= maxTweets) break;
+      let count = 0;
+      let retries = 0;
 
-        // Structure the tweet data
-        fetchedTweets.push({
-          text: tweet.text,
-          created_at: tweet.createdAt,
-          retweet_count: tweet.retweetCount,
-          like_count: tweet.likeCount,
-          id: tweet.id,
-        });
+      while (count < remainingTweets && retries < RETRY_LIMIT) {
+        try {
+          const tweetsStream = scraper.getTweets("degenspartan", FETCH_BATCH_SIZE);
 
-        count++;
-        bar.tick();
+          for await (const tweet of tweetsStream) {
+            // Check if desired count is reached
+            if (count >= remainingTweets) break;
+
+            // Structure the tweet data
+            fetchedTweets.push({
+              text: tweet.text,
+              created_at: tweet.createdAt,
+              retweet_count: tweet.retweetCount,
+              like_count: tweet.likeCount,
+              id: tweet.id,
+            });
+
+            count++;
+            bar.tick();
+
+            // Check for maximum data size
+            const currentSize = Buffer.byteLength(
+              JSON.stringify(fetchedTweets)
+            );
+            if (currentSize > MAX_DATA_SIZE_BYTES) {
+              console.warn(
+                "Reached maximum data size limit. Stopping tweet scraping."
+              );
+              break;
+            }
+          }
+
+          // Reset retries after a successful batch
+          retries = 0;
+
+          // Optional: Delay between batches to handle rate limits
+          await new Promise((resolve) =>
+            setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS)
+          );
+        } catch (error) {
+          retries++;
+          console.error(
+            `Error fetching tweets (Attempt ${retries}/${RETRY_LIMIT}):`,
+            error.message
+          );
+          if (retries >= RETRY_LIMIT) {
+            throw new Error(
+              "Maximum retry attempts reached. Aborting tweet scraping."
+            );
+          } else {
+            // Optional: Exponential backoff
+            const backoffTime = DELAY_BETWEEN_BATCHES_MS * retries;
+            console.log(`Retrying in ${backoffTime / 1000} seconds...`);
+            await new Promise((resolve) => setTimeout(resolve, backoffTime));
+          }
+        }
       }
 
       // Save the fetched tweets to the JSON file
@@ -136,51 +191,125 @@ async function scrapeTweets() {
   }
 }
 
-// Function to scrape blogs
-async function scrapeBlogs() {
-  console.log("\nStarting Blog Scraping...");
-  const blogUrls = loadUrls(BLOG_URLS_FILE);
-  console.log(`Found ${blogUrls.length} blog URLs to scrape.`);
-
-  let fetchedBlogs = [];
-
-  // Load existing blogs if the file exists
-  if (fs.existsSync(BLOGS_FILE)) {
-    const existingData = fs.readFileSync(BLOGS_FILE, "utf-8");
-    fetchedBlogs = JSON.parse(existingData);
-  }
-
-  // Initialize progress bar
-  const bar = new ProgressBar("Scraping Blogs [:bar] :current/:total", {
-    total: blogUrls.length,
-    width: 40,
-  });
-
-  for (const url of blogUrls) {
-    try {
-      const response = await axios.get(url);
-      const $ = cheerio.load(response.data);
-
-      // Adjust selectors based on the blog's HTML structure
-      const content = $("div.post-body, div.entry-content").text().trim();
-
-      if (content) {
-        fetchedBlogs.push({ text: content });
-      } else {
-        console.warn(`No content found for blog: ${url}`);
+/*
+    // Function to scrape blogs with improved error handling
+    async function scrapeBlogs() {
+      console.log("\nStarting Blog Scraping...");
+      const blogUrls = loadUrls(BLOG_URLS_FILE);
+      console.log(`Found ${blogUrls.length} blog URLs to scrape.`);
+    
+      let fetchedBlogs = [];
+      let errorLog = {
+        notFound: [],
+        loginRequired: [],
+        networkErrors: [],
+        emptyContent: [],
+        otherErrors: []
+      };
+    
+      // Load existing blogs if the file exists
+      if (fs.existsSync(BLOGS_FILE)) {
+        const existingData = fs.readFileSync(BLOGS_FILE, "utf-8");
+        fetchedBlogs = JSON.parse(existingData);
       }
-    } catch (error) {
-      console.error(`Error scraping blog ${url}:`, error.message);
+    
+      // Initialize progress bar
+      const bar = new ProgressBar("Scraping Blogs [:bar] :current/:total", {
+        total: blogUrls.length,
+        width: 40,
+      });
+    
+      for (const url of blogUrls) {
+        try {
+          const response = await axios.get(url, {
+            validateStatus: function (status) {
+              return status < 500; // Resolve only if status is less than 500
+            },
+          });
+    
+          // Handle different HTTP status codes
+          if (response.status === 404) {
+            errorLog.notFound.push(url);
+            console.warn(`\n404 Not Found: ${url}`);
+            continue;
+          }
+    
+          if (response.status === 403 || response.status === 401) {
+            errorLog.loginRequired.push(url);
+            console.warn(`\nLogin Required: ${url}`);
+            continue;
+          }
+    
+          if (response.status !== 200) {
+            errorLog.otherErrors.push({ url, status: response.status });
+            console.warn(`\nUnexpected status ${response.status}: ${url}`);
+            continue;
+          }
+    
+          const $ = cheerio.load(response.data);
+    
+          // Check for common login-wall indicators
+          const loginIndicators = [
+            'form[action*="login"]',
+            'form[action*="signin"]',
+            'div[class*="login"]',
+            'div[class*="signin"]',
+            'input[name="password"]'
+          ];
+    
+          const hasLoginWall = loginIndicators.some(selector => $(selector).length > 0);
+          if (hasLoginWall) {
+            errorLog.loginRequired.push(url);
+            console.warn(`\nLogin wall detected: ${url}`);
+            continue;
+          }
+    
+          // Adjust selectors based on the blog's HTML structure
+          const content = $("div.post-body, div.entry-content").text().trim();
+    
+          if (!content || content.length < 50) { // Minimum content length threshold
+            errorLog.emptyContent.push(url);
+            console.warn(`\nNo content or too short content found for blog: ${url}`);
+            continue;
+          }
+    
+          fetchedBlogs.push({ text: content });
+    
+        } catch (error) {
+          if (axios.isAxiosError(error)) {
+            if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+              errorLog.networkErrors.push({ url, error: error.code });
+              console.warn(`\nNetwork Error (${error.code}): ${url}`);
+            } else {
+              errorLog.otherErrors.push({ url, error: error.message });
+              console.warn(`\nAxios Error: ${url} - ${error.message}`);
+            }
+          } else {
+            errorLog.otherErrors.push({ url, error: error.message });
+            console.warn(`\nUnexpected Error: ${url} - ${error.message}`);
+          }
+        } finally {
+          bar.tick();
+        }
+      }
+    
+      // Save the fetched blogs to the JSON file
+      fs.writeFileSync(BLOGS_FILE, JSON.stringify(fetchedBlogs, null, 2));
+      
+      // Save error log to a separate file
+      fs.writeFileSync('blog_scraping_errors.json', JSON.stringify(errorLog, null, 2));
+    
+      // Print summary
+      console.log("\n=== Scraping Summary ===");
+      console.log(`Successfully scraped: ${fetchedBlogs.length} blogs`);
+      console.log(`404 Not Found: ${errorLog.notFound.length}`);
+      console.log(`Login Required: ${errorLog.loginRequired.length}`);
+      console.log(`Network Errors: ${errorLog.networkErrors.length}`);
+      console.log(`Empty Content: ${errorLog.emptyContent.length}`);
+      console.log(`Other Errors: ${errorLog.otherErrors.length}`);
+      console.log(`Error details saved to blog_scraping_errors.json`);
     }
-    bar.tick();
-  }
-
-  // Save the fetched blogs to the JSON file
-  fs.writeFileSync(BLOGS_FILE, JSON.stringify(fetchedBlogs, null, 2));
-  console.log(
-    `\nScraped ${fetchedBlogs.length} blogs and saved to ${BLOGS_FILE}`
-  );
-}
+*/
 
 // Function to format data into JSONL
 function formatData() {
@@ -247,7 +376,7 @@ async function main() {
 
     // Execute the scraping and formatting pipeline
     await scrapeTweets();
-    await scrapeBlogs();
+    // await scrapeBlogs(); // Blog scraping is commented out
     formatData();
 
     console.log("\n=== Process Completed Successfully ===");
