@@ -96,6 +96,8 @@ async function scrapeTweets() {
         const existingData = fs.readFileSync(TWEETS_FILE, "utf-8");
         fetchedTweets = JSON.parse(existingData);
         console.log(`Loaded ${fetchedTweets.length} existing tweets.`);
+      } else {
+        console.log("No existing tweets found. Starting fresh.");
       }
 
       // Calculate remaining tweets to fetch
@@ -117,13 +119,36 @@ async function scrapeTweets() {
 
       let count = 0;
       let retries = 0;
+      let lastTweetId = null; // To keep track of pagination
 
       while (count < remainingTweets && retries < RETRY_LIMIT) {
         try {
-          const tweetsStream = scraper.getTweets("degenspartan", FETCH_BATCH_SIZE);
+          // Fetch a batch of tweets
+          const tweetsStream = scraper.getTweets(
+            "degenspartan",
+            FETCH_BATCH_SIZE,
+            lastTweetId
+          );
 
+          // Convert the async iterator to an array
+          const tweetsArray = [];
           for await (const tweet of tweetsStream) {
-            // Check if desired count is reached
+            tweetsArray.push(tweet);
+            // Update lastTweetId for pagination
+            lastTweetId = tweet.id;
+            // Check if we've reached the remaining tweets
+            if (count + tweetsArray.length >= remainingTweets) {
+              break;
+            }
+          }
+
+          if (tweetsArray.length === 0) {
+            console.log("No more tweets available to fetch.");
+            break;
+          }
+
+          // Iterate over the fetched tweets
+          for (const tweet of tweetsArray) {
             if (count >= remainingTweets) break;
 
             // Structure the tweet data
@@ -137,17 +162,6 @@ async function scrapeTweets() {
 
             count++;
             bar.tick();
-
-            // Check for maximum data size
-            const currentSize = Buffer.byteLength(
-              JSON.stringify(fetchedTweets)
-            );
-            if (currentSize > MAX_DATA_SIZE_BYTES) {
-              console.warn(
-                "Reached maximum data size limit. Stopping tweet scraping."
-              );
-              break;
-            }
           }
 
           // Reset retries after a successful batch

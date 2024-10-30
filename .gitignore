@@ -5,3 +5,5 @@ degenspartanblogurls.txt
 blog_scraping_errors.json
 *.jsonl
 tweets.json
+backups/
+tweets_cleaned.json
