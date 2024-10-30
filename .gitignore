@@ -7,3 +7,5 @@ blog_scraping_errors.json
 tweets.json
 backups/
 tweets_cleaned.json
+
+pipeline/
