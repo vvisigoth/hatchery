@@ -9,3 +9,4 @@ backups/
 tweets_cleaned.json
 
 pipeline/
+data/

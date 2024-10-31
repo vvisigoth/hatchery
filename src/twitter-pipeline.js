@@ -1,101 +1,621 @@
+// twitter-pipeline.js
+
 import { Scraper, SearchMode } from "agent-twitter-client";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import ProgressBar from "progress";
+import chalk from "chalk";
+import ora from "ora";
+import Table from "cli-table3";
+import { format, parseISO, isValid } from "date-fns";
+import inquirer from "inquirer";
 
 dotenv.config();
 
-function getConfigForUser(username) {
-  const sanitizedUsername = username.toLowerCase().replace(/[^a-z0-9_]/g, "");
-  return {
-    targetAccount: username,
-    paths: {
-      tweetUrls: `pipeline/${sanitizedUsername}-urls.txt`,
-      tweets: `pipeline/${sanitizedUsername}-tweets.json`,
-      finetuning: `pipeline/${sanitizedUsername}-finetuning.jsonl`,
-      history: `pipeline/${sanitizedUsername}-history.json`,
-      outputDir: "pipeline",
-      cookies: "pipeline/twitter-cookies.json",
-    },
-    twitter: {
-      batchSize: 2000,
-      delayBetweenBatches: 1000,
-      searchBatchSize: 100,
-      maxRetries: 3,
-      retryDelay: 5000,
-      rateLimitDelay: 1000,
-      searchSearchDelay: 2000,
-    },
-  };
-}
+class Logger {
+  static spinner = null;
 
-function setupDirectories() {
-  if (!fs.existsSync("pipeline")) {
-    fs.mkdirSync("pipeline", { recursive: true });
-    console.log(`Created output directory: pipeline`);
+  static startSpinner(text) {
+    this.spinner = ora(text).start();
+  }
+
+  static stopSpinner(success = true) {
+    if (this.spinner) {
+      success ? this.spinner.succeed() : this.spinner.fail();
+      this.spinner = null;
+    }
+  }
+
+  static info(msg) {
+    console.log(chalk.blue(`ℹ️  ${msg}`));
+  }
+
+  static success(msg) {
+    console.log(chalk.green(`✅ ${msg}`));
+  }
+
+  static warn(msg) {
+    console.log(chalk.yellow(`⚠️  ${msg}`));
+  }
+
+  static error(msg) {
+    console.log(chalk.red(`❌ ${msg}`));
+  }
+
+  static stats(title, data) {
+    console.log(chalk.cyan(`\n📊 ${title}:`));
+    const table = new Table({
+      head: [chalk.white("Parameter"), chalk.white("Value")],
+      colWidths: [25, 60],
+    });
+    Object.entries(data).forEach(([key, value]) => {
+      table.push([chalk.white(key), value]);
+    });
+    console.log(table.toString());
   }
 }
 
-function validateEnvironment() {
-  const required = ["TWITTER_USERNAME", "TWITTER_PASSWORD"];
-  const missing = required.filter((var_) => !process.env[var_]);
-
-  if (missing.length > 0) {
-    console.error("❌ Missing required environment variables:");
-    missing.forEach((var_) => console.error(`   - ${var_}`));
-    console.log("\n📝 Create a .env file with YOUR Twitter credentials:");
-    console.log(
-      `TWITTER_USERNAME=your_username\nTWITTER_PASSWORD=your_password`
+class DataOrganizer {
+  constructor(baseDir, username) {
+    this.baseDir = path.join(
+      baseDir,
+      format(new Date(), "yyyy-MM-dd"),
+      username.toLowerCase()
     );
-    process.exit(1);
+    this.createDirectories();
+  }
+
+  createDirectories() {
+    const dirs = ["raw", "processed", "analytics", "exports"];
+    dirs.forEach((dir) => {
+      const fullPath = path.join(this.baseDir, dir);
+      if (!fs.existsSync(fullPath)) {
+        fs.mkdirSync(fullPath, { recursive: true });
+        Logger.info(`Created directory: ${path.join(this.baseDir, dir)}`);
+      }
+    });
+  }
+
+  getPaths() {
+    return {
+      raw: {
+        tweets: path.join(this.baseDir, "raw", "tweets.json"),
+        urls: path.join(this.baseDir, "raw", "urls.txt"),
+        cookies: path.join(this.baseDir, "raw", "cookies.json"),
+      },
+      processed: {
+        finetuning: path.join(this.baseDir, "processed", "finetuning.jsonl"),
+        history: path.join(this.baseDir, "processed", "history.json"),
+      },
+      analytics: {
+        stats: path.join(this.baseDir, "analytics", "stats.json"),
+        engagement: path.join(this.baseDir, "analytics", "engagement.json"),
+      },
+      exports: {
+        summary: path.join(this.baseDir, "exports", "summary.md"),
+      },
+    };
+  }
+
+  async saveTweets(tweets) {
+    const paths = this.getPaths();
+
+    try {
+      await fs.promises.writeFile(
+        paths.raw.tweets,
+        JSON.stringify(tweets, null, 2)
+      );
+      Logger.success(`Saved tweets to ${paths.raw.tweets}`);
+
+      const urls = tweets.map((t) => t.permanentUrl);
+      await fs.promises.writeFile(paths.raw.urls, urls.join("\n"));
+      Logger.success(`Saved tweet URLs to ${paths.raw.urls}`);
+
+      const analytics = this.generateAnalytics(tweets);
+      await fs.promises.writeFile(
+        paths.analytics.stats,
+        JSON.stringify(analytics, null, 2)
+      );
+      Logger.success(`Saved analytics to ${paths.analytics.stats}`);
+
+      const finetuningData = this.generateFinetuningData(tweets);
+      Logger.info(
+        `Generating fine-tuning data with ${finetuningData.length} entries`
+      );
+
+      if (finetuningData.length > 0) {
+        await fs.promises.writeFile(
+          paths.processed.finetuning,
+          finetuningData.map((d) => JSON.stringify(d)).join("\n")
+        );
+        Logger.success(
+          `Saved fine-tuning data to ${paths.processed.finetuning}`
+        );
+      } else {
+        Logger.warn("⚠️ No fine-tuning data to save.");
+      }
+
+      const summary = this.generateSummary(tweets, analytics);
+      await fs.promises.writeFile(paths.exports.summary, summary);
+      Logger.success(`Saved summary to ${paths.exports.summary}`);
+
+      return analytics;
+    } catch (error) {
+      Logger.error(`❌ Error saving data: ${error.message}`);
+      throw error;
+    }
+  }
+
+  generateAnalytics(tweets) {
+    if (tweets.length === 0) {
+      Logger.warn("No tweets to analyze.");
+      return {
+        totalTweets: 0,
+        directTweets: 0,
+        replies: 0,
+        retweets: 0,
+        engagement: {
+          totalLikes: 0,
+          totalRetweetCount: 0,
+          totalReplies: 0,
+          averageLikes: "0.00",
+          topTweets: [],
+        },
+        timeRange: {
+          start: "N/A",
+          end: "N/A",
+        },
+        contentTypes: {
+          withImages: 0,
+          withVideos: 0,
+          withLinks: 0,
+          textOnly: 0,
+        },
+      };
+    }
+
+    const validTweets = tweets.filter((t) => t.timestamp !== null);
+    const invalidTweets = tweets.filter((t) => t.timestamp === null);
+
+    if (invalidTweets.length > 0) {
+      Logger.warn(
+        `Found ${invalidTweets.length} tweets with invalid or missing dates. They will be excluded from analytics.`
+      );
+    }
+
+    const validDates = validTweets
+      .map((t) => t.timestamp)
+      .sort((a, b) => a - b);
+
+    // Filter out retweets for engagement calculations
+    const tweetsForEngagement = tweets.filter((t) => !t.isRetweet);
+
+    return {
+      totalTweets: tweets.length,
+      directTweets: tweets.filter((t) => !t.isReply && !t.isRetweet).length,
+      replies: tweets.filter((t) => t.isReply).length,
+      retweets: tweets.filter((t) => t.isRetweet).length, // Number of retweeted tweets
+      engagement: {
+        totalLikes: tweetsForEngagement.reduce(
+          (sum, t) => sum + (t.likes || 0),
+          0
+        ),
+        totalRetweetCount: tweetsForEngagement.reduce(
+          (sum, t) => sum + (t.retweetCount || 0),
+          0
+        ),
+        totalReplies: tweetsForEngagement.reduce(
+          (sum, t) => sum + (t.replies || 0),
+          0
+        ),
+        averageLikes: (
+          tweetsForEngagement.reduce((sum, t) => sum + (t.likes || 0), 0) /
+          tweetsForEngagement.length
+        ).toFixed(2),
+        topTweets: tweetsForEngagement
+          .sort((a, b) => (b.likes || 0) - (a.likes || 0))
+          .slice(0, 5)
+          .map((t) => ({
+            id: t.id,
+            text: t.text.slice(0, 100),
+            likes: t.likes,
+            retweetCount: t.retweetCount,
+            url: t.permanentUrl,
+          })),
+      },
+      timeRange: {
+        start: validDates.length
+          ? format(new Date(validDates[0]), "yyyy-MM-dd")
+          : "N/A",
+        end: validDates.length
+          ? format(new Date(validDates[validDates.length - 1]), "yyyy-MM-dd")
+          : "N/A",
+      },
+      contentTypes: {
+        withImages: tweets.filter((t) => t.photos?.length > 0).length,
+        withVideos: tweets.filter((t) => t.videos?.length > 0).length,
+        withLinks: tweets.filter((t) => t.urls?.length > 0).length,
+        textOnly: tweets.filter(
+          (t) => !t.photos?.length && !t.videos?.length && !t.urls?.length
+        ).length,
+      },
+    };
+  }
+
+  generateFinetuningData(tweets) {
+    return tweets
+      .filter(
+        (tweet) =>
+          !tweet.isRetweet && tweet.text && tweet.timestamp !== null
+      )
+      .map((tweet) => {
+        let cleanText = tweet.text
+          .replace(/(?:https?:\/\/|www\.)[^\s]+/g, "") // Remove URLs
+          .replace(/#[^\s#]+/g, "") // Remove Hashtags
+          .replace(/\s+/g, " ")
+          .trim();
+
+        if (!cleanText) return null;
+
+        // Return only the clean text, without usernames or metadata
+        return {
+          text: cleanText,
+        };
+      })
+      .filter((entry) => {
+        if (!entry) return false;
+        return typeof entry.text === "string" && entry.text.length > 0;
+      });
+  }
+
+  generateSummary(tweets, analytics) {
+    return `# Twitter Data Collection Summary
+
+## Overview
+- **Collection Date:** ${format(new Date(), "yyyy-MM-dd HH:mm:ss")}
+- **Total Tweets:** ${analytics.totalTweets}
+- **Date Range:** ${analytics.timeRange.start} to ${analytics.timeRange.end}
+
+## Tweet Distribution
+- **Direct Tweets:** ${analytics.directTweets}
+- **Replies:** ${analytics.replies}
+- **Retweets (retweeted tweets):** ${analytics.retweets}
+
+## Content Types
+- **With Images:** ${analytics.contentTypes.withImages}
+- **With Videos:** ${analytics.contentTypes.withVideos}
+- **With Links:** ${analytics.contentTypes.withLinks}
+- **Text Only:** ${analytics.contentTypes.textOnly}
+
+## Engagement Statistics (Original Tweets and Replies)
+- **Total Likes:** ${analytics.engagement.totalLikes.toLocaleString()}
+- **Total Retweet Count:** ${analytics.engagement.totalRetweetCount.toLocaleString()}
+- **Total Replies:** ${analytics.engagement.totalReplies.toLocaleString()}
+- **Average Likes per Tweet:** ${analytics.engagement.averageLikes}
+
+## Top Tweets
+${analytics.engagement.topTweets
+  .map(
+    (t) => `- [${t.likes} likes] ${t.text}...\n  • ${t.url}`
+  )
+  .join("\n\n")}
+
+## Storage Details
+Raw data, analytics, and exports can be found in:
+**${this.baseDir}**
+`;
   }
 }
 
-class TweetHistory {
-  constructor(historyPath) {
-    this.historyPath = historyPath;
-    this.knownTweets = new Set();
-    this.loadHistory();
+class TweetFilter {
+  constructor() {
+    this.options = {};
   }
 
-  loadHistory() {
-    try {
-      if (fs.existsSync(this.historyPath)) {
-        const history = JSON.parse(fs.readFileSync(this.historyPath, "utf8"));
-        this.knownTweets = new Set(history.tweetIds);
-        console.log(
-          `📚 Loaded history of ${this.knownTweets.size} known tweets`
-        );
-      }
-    } catch (error) {
-      console.warn("⚠️ Error loading tweet history:", error.message);
-      this.knownTweets = new Set();
-    }
-  }
+  async promptCollectionMode() {
+    const { mode } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "mode",
+        message: "How would you like to collect tweets?",
+        choices: [
+          {
+            name: "📥 Get all tweets (fastest, includes everything)",
+            value: "all",
+          },
+          {
+            name: "🎯 Custom collection (filter by type, date, engagement, etc)",
+            value: "custom",
+          },
+        ],
+      },
+    ]);
 
-  saveHistory() {
-    try {
-      const history = {
-        tweetIds: Array.from(this.knownTweets),
-        lastUpdated: new Date().toISOString(),
+    if (mode === "all") {
+      this.options = {
+        tweetTypes: ["original", "replies", "quotes", "retweets"],
+        contentTypes: ["text", "images", "videos", "links"],
+        filterByEngagement: false,
+        filterByDate: false,
+        excludeKeywords: false,
       };
-      fs.writeFileSync(this.historyPath, JSON.stringify(history, null, 2));
-    } catch (error) {
-      console.error("❌ Error saving tweet history:", error.message);
+
+      Logger.info("\nCollection Configuration:");
+      const configTable = new Table({
+        head: [chalk.white("Parameter"), chalk.white("Value")],
+        colWidths: [25, 60],
+      });
+      configTable.push(
+        ["Mode", chalk.green("Complete Collection")],
+        [
+          "Includes",
+          [
+            "✓ Original tweets",
+            "✓ Replies to others",
+            "✓ Quote tweets",
+            "✓ Retweets",
+            "✓ Text-only tweets",
+            "✓ Tweets with media (images/videos)",
+            "✓ Tweets with links",
+          ].join("\n"),
+        ],
+        ["Filtering", chalk.blue("None - collecting everything")]
+      );
+      console.log(configTable.toString());
+
+      const { confirm } = await inquirer.prompt([
+        {
+          type: "confirm",
+          name: "confirm",
+          message: "Would you like to proceed with collecting everything?",
+          default: true,
+        },
+      ]);
+
+      if (!confirm) {
+        return this.promptCollectionMode();
+      }
+
+      Logger.info(
+        `Selected Tweet Types: ${this.options.tweetTypes.join(", ")}`
+      );
+      Logger.info(
+        `Selected Content Types: ${this.options.contentTypes.join(", ")}`
+      );
+
+      return this.options;
     }
+
+    return this.promptCustomOptions();
   }
 
-  isKnown(tweetId) {
-    return this.knownTweets.has(tweetId);
+  async promptCustomOptions() {
+    Logger.info("Configure Custom Tweet Collection");
+
+    const answers = await inquirer.prompt([
+      {
+        type: "checkbox",
+        name: "tweetTypes",
+        message: "What types of tweets would you like to collect?",
+        choices: [
+          { name: "Original tweets", value: "original", checked: true },
+          { name: "Replies to others", value: "replies", checked: true },
+          { name: "Quote tweets", value: "quotes", checked: true },
+          { name: "Retweets", value: "retweets", checked: true },
+        ],
+        validate: (input) =>
+          input.length > 0 || "Please select at least one tweet type.",
+      },
+      {
+        type: "checkbox",
+        name: "contentTypes",
+        message: "What content types would you like to include?",
+        choices: [
+          { name: "Text-only tweets", value: "text", checked: true },
+          { name: "Tweets with images", value: "images", checked: true },
+          { name: "Tweets with videos", value: "videos", checked: true },
+          { name: "Tweets with links", value: "links", checked: true },
+        ],
+        validate: (input) =>
+          input.length > 0 || "Please select at least one content type.",
+      },
+      {
+        type: "confirm",
+        name: "filterByEngagement",
+        message: "Would you like to filter by minimum engagement?",
+        default: false,
+      },
+      {
+        type: "number",
+        name: "minLikes",
+        message: "Minimum number of likes:",
+        default: 0,
+        when: (answers) => answers.filterByEngagement,
+        validate: (value) =>
+          value >= 0 ? true : "Please enter a positive number",
+      },
+      {
+        type: "number",
+        name: "minRetweets",
+        message: "Minimum number of retweets:",
+        default: 0,
+        when: (answers) => answers.filterByEngagement,
+        validate: (value) =>
+          value >= 0 ? true : "Please enter a positive number",
+      },
+      {
+        type: "confirm",
+        name: "filterByDate",
+        message: "Would you like to filter by date range?",
+        default: false,
+      },
+      {
+        type: "input",
+        name: "startDate",
+        message: "Start date (YYYY-MM-DD):",
+        when: (answers) => answers.filterByDate,
+        validate: (value) => {
+          const date = parseISO(value);
+          return isValid(date) ? true : "Please enter a valid date";
+        },
+      },
+      {
+        type: "input",
+        name: "endDate",
+        message: "End date (YYYY-MM-DD):",
+        when: (answers) => answers.filterByDate,
+        validate: (value) => {
+          const date = parseISO(value);
+          return isValid(date) ? true : "Please enter a valid date";
+        },
+      },
+      {
+        type: "confirm",
+        name: "excludeKeywords",
+        message:
+          "Would you like to exclude tweets containing specific keywords?",
+        default: false,
+      },
+      {
+        type: "input",
+        name: "keywordsToExclude",
+        message: "Enter keywords to exclude (comma-separated):",
+        when: (answers) => answers.excludeKeywords,
+        filter: (input) =>
+          input
+            .split(",")
+            .map((k) => k.trim())
+            .filter((k) => k),
+      },
+    ]);
+
+    this.options = answers;
+
+    Logger.info(`Selected Tweet Types: ${this.options.tweetTypes.join(", ")}`);
+    Logger.info(
+      `Selected Content Types: ${this.options.contentTypes.join(", ")}`
+    );
+
+    Logger.info("\nCollection Configuration:");
+    const configTable = new Table({
+      head: [chalk.white("Parameter"), chalk.white("Value")],
+      colWidths: [25, 60],
+    });
+
+    configTable.push(
+      ["Tweet Types", answers.tweetTypes.join(", ")],
+      ["Content Types", answers.contentTypes.join(", ")]
+    );
+
+    if (answers.filterByEngagement) {
+      configTable.push(
+        ["Min. Likes", answers.minLikes],
+        ["Min. Retweets", answers.minRetweets]
+      );
+    }
+
+    if (answers.filterByDate) {
+      configTable.push([
+        "Date Range",
+        `${answers.startDate} to ${answers.endDate}`,
+      ]);
+    }
+
+    if (answers.excludeKeywords) {
+      configTable.push([
+        "Excluded Keywords",
+        answers.keywordsToExclude.join(", "),
+      ]);
+    }
+
+    console.log(configTable.toString());
+
+    const { confirmed } = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "confirmed",
+        message: "Would you like to proceed with this configuration?",
+        default: true,
+      },
+    ]);
+
+    if (!confirmed) {
+      Logger.info("Restarting configuration...");
+      return this.promptCustomOptions();
+    }
+
+    return this.options;
   }
 
-  addTweet(tweetId) {
-    this.knownTweets.add(tweetId);
-  }
+  shouldIncludeTweet(tweet) {
+    if (
+      this.options.tweetTypes?.length === 4 &&
+      this.options.contentTypes?.length === 4 &&
+      !this.options.filterByEngagement &&
+      !this.options.filterByDate &&
+      !this.options.excludeKeywords
+    ) {
+      return true;
+    }
 
-  get size() {
-    return this.knownTweets.size;
+    // Exclude retweets if not selected
+    if (!this.options.tweetTypes.includes("retweets") && tweet.isRetweet) {
+      return false;
+    }
+
+    if (!this.options.tweetTypes.includes("replies") && tweet.isReply) {
+      return false;
+    }
+    if (!this.options.tweetTypes.includes("quotes") && tweet.quotedTweet) {
+      return false;
+    }
+    if (
+      !this.options.tweetTypes.includes("original") &&
+      !tweet.isReply &&
+      !tweet.quotedTweet &&
+      !tweet.isRetweet
+    ) {
+      return false;
+    }
+
+    const hasImage = tweet.photos && tweet.photos.length > 0;
+    const hasVideo = tweet.videos && tweet.videos.length > 0;
+    const hasLinks = tweet.urls && tweet.urls.length > 0;
+
+    if (!this.options.contentTypes.includes("images") && hasImage) return false;
+    if (!this.options.contentTypes.includes("videos") && hasVideo) return false;
+    if (!this.options.contentTypes.includes("links") && hasLinks) return false;
+    if (
+      !this.options.contentTypes.includes("text") &&
+      !hasImage &&
+      !hasVideo &&
+      !hasLinks
+    )
+      return false;
+
+    if (this.options.filterByEngagement) {
+      if (tweet.likes < this.options.minLikes) return false;
+      if (tweet.retweetCount < this.options.minRetweets) return false;
+    }
+
+    if (this.options.filterByDate) {
+      const tweetDate = new Date(tweet.timestamp);
+      const startDate = new Date(this.options.startDate);
+      const endDate = new Date(this.options.endDate);
+      if (tweetDate < startDate || tweetDate > endDate) return false;
+    }
+
+    if (
+      this.options.excludeKeywords &&
+      this.options.keywordsToExclude.some((keyword) =>
+        tweet.text.toLowerCase().includes(keyword.toLowerCase())
+      )
+    ) {
+      return false;
+    }
+
+    return true;
   }
 }
 
@@ -118,636 +638,623 @@ class RateLimiter {
   }
 }
 
-async function loadCookies() {
+class TweetHistory {
+  constructor(historyPath) {
+    this.historyPath = historyPath;
+    this.knownTweets = new Set();
+    this.loadHistory();
+  }
+
+  loadHistory() {
+    try {
+      if (fs.existsSync(this.historyPath)) {
+        const history = JSON.parse(fs.readFileSync(this.historyPath, "utf8"));
+        this.knownTweets = new Set(history.tweetIds);
+        Logger.info(
+          `📚 Loaded history of ${this.knownTweets.size} known tweets`
+        );
+      }
+    } catch (error) {
+      Logger.warn(`⚠️ Error loading tweet history: ${error.message}`);
+      this.knownTweets = new Set();
+    }
+  }
+
+  saveHistory() {
+    try {
+      const history = {
+        tweetIds: Array.from(this.knownTweets),
+        lastUpdated: new Date().toISOString(),
+      };
+      fs.writeFileSync(this.historyPath, JSON.stringify(history, null, 2));
+      Logger.success(`Saved tweet history to ${this.historyPath}`);
+    } catch (error) {
+      Logger.error(`❌ Error saving tweet history: ${error.message}`);
+    }
+  }
+
+  isKnown(tweetId) {
+    return this.knownTweets.has(tweetId);
+  }
+
+  addTweet(tweetId) {
+    this.knownTweets.add(tweetId);
+  }
+
+  get size() {
+    return this.knownTweets.size;
+  }
+}
+
+async function loadCookies(cookiesPath) {
   try {
-    if (fs.existsSync("pipeline/twitter-cookies.json")) {
-      const cookiesData = fs.readFileSync(
-        "pipeline/twitter-cookies.json",
-        "utf8"
-      );
+    if (fs.existsSync(cookiesPath)) {
+      const cookiesData = fs.readFileSync(cookiesPath, "utf8");
       return JSON.parse(cookiesData);
     }
   } catch (error) {
-    console.warn("⚠️ Error loading cookies:", error.message);
+    Logger.warn(`⚠️ Error loading cookies: ${error.message}`);
   }
   return null;
 }
 
-async function saveCookies(cookies) {
+async function saveCookies(cookiesPath, cookies) {
   try {
-    fs.writeFileSync(
-      "pipeline/twitter-cookies.json",
-      JSON.stringify(cookies, null, 2)
-    );
-    console.log("✅ Cookies saved successfully");
+    fs.writeFileSync(cookiesPath, JSON.stringify(cookies, null, 2));
+    Logger.success("✅ Cookies saved successfully");
   } catch (error) {
-    console.error("❌ Error saving cookies:", error.message);
+    Logger.error(`❌ Error saving cookies: ${error.message}`);
   }
 }
 
-async function initializeScraper() {
-  const scraper = new Scraper();
-  let retryCount = 0;
+class TwitterPipeline {
+  constructor(username) {
+    this.username = username;
+    this.dataOrganizer = new DataOrganizer("pipeline", username);
+    this.paths = this.dataOrganizer.getPaths();
+    this.tweetFilter = new TweetFilter();
+    this.config = {
+      twitter: {
+        batchSize: 2000,
+        delayBetweenBatches: 1000,
+        searchBatchSize: 100,
+        maxRetries: 3,
+        retryDelay: 5000,
+        rateLimitDelay: 1000,
+        searchDelay: 2000,
+      },
+    };
+    this.scraper = null;
+    this.history = new TweetHistory(this.paths.processed.history);
+  }
 
-  while (retryCount < 3) {
-    try {
-      const cookies = await loadCookies();
+  async validateEnvironment() {
+    Logger.startSpinner("Validating environment");
+    const required = ["TWITTER_USERNAME", "TWITTER_PASSWORD"];
+    const missing = required.filter((var_) => !process.env[var_]);
 
-      if (cookies) {
-        console.log("🍪 Found existing cookies, attempting to use them...");
-        try {
-          const cookieStrings = cookies.map(
-            (cookie) =>
-              `${cookie.name}=${cookie.value}; Domain=${cookie.domain}; Path=${cookie.path}`
-          );
-          await scraper.setCookies(cookieStrings);
-          if (await scraper.isLoggedIn()) {
-            console.log("✅ Successfully authenticated using saved cookies");
-            return scraper;
+    if (missing.length > 0) {
+      Logger.stopSpinner(false);
+      Logger.error("Missing required environment variables:");
+      missing.forEach((var_) => Logger.error(`- ${var_}`));
+      console.log("\n📝 Create a .env file with your Twitter credentials:");
+      console.log(
+        `TWITTER_USERNAME=your_username\nTWITTER_PASSWORD=your_password`
+      );
+      process.exit(1);
+    }
+    Logger.stopSpinner();
+  }
+
+  async initializeScraper() {
+    Logger.startSpinner("Initializing Twitter scraper");
+    const scraper = new Scraper();
+    let retryCount = 0;
+
+    while (retryCount < this.config.twitter.maxRetries) {
+      try {
+        Logger.info(`🔍 Scraper Initialization Attempt ${retryCount + 1}`);
+        const cookies = await loadCookies(this.paths.raw.cookies);
+
+        if (cookies) {
+          Logger.info("🍪 Found existing cookies, attempting to use them...");
+          try {
+            const cookieStrings = cookies.map(
+              (cookie) =>
+                `${cookie.name}=${cookie.value}; Domain=${cookie.domain}; Path=${cookie.path}`
+            );
+            await scraper.setCookies(cookieStrings);
+            if (await scraper.isLoggedIn()) {
+              Logger.success(
+                "✅ Successfully authenticated using saved cookies"
+              );
+              this.scraper = scraper;
+              Logger.stopSpinner();
+              return scraper;
+            } else {
+              Logger.warn("⚠️ Saved cookies are invalid or expired.");
+            }
+          } catch (error) {
+            Logger.warn(`⚠️ Error using saved cookies: ${error.message}`);
           }
-          console.log("⚠️ Saved cookies are invalid or expired");
-        } catch (error) {
-          console.warn("⚠️ Error using saved cookies:", error.message);
         }
+
+        Logger.info("🔑 Logging in with credentials...");
+        await scraper.login(
+          process.env.TWITTER_USERNAME,
+          process.env.TWITTER_PASSWORD
+        );
+
+        if (await scraper.isLoggedIn()) {
+          Logger.success("✅ Successfully logged into Twitter");
+          const newCookies = await scraper.getCookies();
+          await saveCookies(this.paths.raw.cookies, newCookies);
+          this.scraper = scraper;
+          Logger.stopSpinner();
+          return scraper;
+        } else {
+          throw new Error(
+            "Login attempt failed: Unable to verify login status."
+          );
+        }
+      } catch (error) {
+        retryCount++;
+        Logger.warn(`⚠️ Login attempt ${retryCount} failed: ${error.message}`);
+        if (retryCount >= this.config.twitter.maxRetries) {
+          Logger.stopSpinner(false);
+          throw new Error(
+            `❌ Failed to authenticate after ${retryCount} attempts: ${error.message}`
+          );
+        }
+        Logger.info(
+          `⏳ Retrying in 5 seconds... (${retryCount}/${this.config.twitter.maxRetries})`
+        );
+        await new Promise((r) => setTimeout(r, this.config.twitter.retryDelay));
+      }
+    }
+
+    Logger.stopSpinner(false);
+    throw new Error("❌ Failed to initialize scraper after maximum retries");
+  }
+
+  processTweetData(tweet) {
+    try {
+      Logger.info(`Processing Tweet ID: ${tweet.id}`);
+      Logger.info(`Raw Tweet Data: ${JSON.stringify(tweet, null, 2)}`);
+
+      const createdAt = this.parseTweetDate(tweet.createdAt, tweet.timestamp);
+
+      if (!createdAt) {
+        Logger.warn(`⚠️ Tweet ID ${tweet.id} has an invalid or missing date.`);
+        Logger.info(`📄 Tweet Data: ${JSON.stringify(tweet, null, 2)}`);
       }
 
-      console.log("🔑 Logging in with credentials...");
-      await scraper.login(
-        process.env.TWITTER_USERNAME,
-        process.env.TWITTER_PASSWORD
+      const likes =
+        typeof tweet.likes === "number"
+          ? tweet.likes
+          : parseInt(tweet.likes) || 0;
+      const retweetCount =
+        typeof tweet.retweets === "number"
+          ? tweet.retweets
+          : parseInt(tweet.retweets) || 0;
+      const replies =
+        typeof tweet.replies === "number"
+          ? tweet.replies
+          : parseInt(tweet.replies) || 0;
+
+      const isRetweet = tweet.text.startsWith("RT @");
+
+      Logger.info(
+        `Tweet ID: ${tweet.id} | Likes: ${likes} | Retweets: ${retweetCount} | Replies: ${replies} | Quotes: ${tweet.quotes}`
       );
 
-      if (await scraper.isLoggedIn()) {
-        console.log("✅ Successfully logged into Twitter");
-        const newCookies = await scraper.getCookies();
-        await saveCookies(newCookies);
-        return scraper;
-      }
-
-      throw new Error("Login attempt failed");
-    } catch (error) {
-      retryCount++;
-      if (retryCount >= 3) {
-        throw new Error(
-          `Failed to authenticate after ${retryCount} attempts: ${error.message}`
-        );
-      }
-      console.warn(`\n⚠️ Login attempt ${retryCount} failed: ${error.message}`);
-      console.log(`Retrying in 5 seconds...`);
-      await new Promise((r) => setTimeout(r, 5000));
-    }
-  }
-}
-
-function parseTweetDate(dateStr) {
-  try {
-    if (!dateStr) return null;
-    const parsed = new Date(dateStr);
-    if (isNaN(parsed.getTime())) {
-      console.warn(`⚠️ Invalid date found: ${dateStr}`);
-      return null;
-    }
-    return parsed;
-  } catch (error) {
-    console.warn(`⚠️ Error parsing date: ${dateStr}`);
-    return null;
-  }
-}
-
-function processTweetData(tweet) {
-  try {
-    const core = tweet.core?.user_results?.result?.legacy || {};
-    const legacy = tweet.legacy || {};
-    const entities = legacy.entities || {};
-    const quoted = tweet.quoted_status_result?.result || {};
-    const quotedLegacy = quoted?.legacy || {};
-
-    const createdAt = parseTweetDate(tweet.createdAt || legacy.created_at);
-    const quotedCreatedAt = parseTweetDate(
-      quoted.created_at || quotedLegacy.created_at
-    );
-
-    return {
-      id: tweet.rest_id || tweet.id,
-      name: tweet.name || core.name,
-      username: tweet.username || core.screen_name,
-      text: tweet.text || legacy.full_text,
-      inReplyToStatusId:
-        tweet.inReplyToStatusId || legacy.in_reply_to_status_id_str,
-      inReplyToUserId: tweet.inReplyToUserId || legacy.in_reply_to_user_id_str,
-      inReplyToUsername:
-        tweet.inReplyToUsername || legacy.in_reply_to_screen_name,
-      createdAt: createdAt ? createdAt.toISOString() : null,
-      timestamp: createdAt ? createdAt.getTime() : null,
-      userId: tweet.userId || legacy.user_id_str,
-      conversationId: tweet.conversationId || legacy.conversation_id_str,
-      hashtags: tweet.hashtags || entities.hashtags || [],
-      mentions: tweet.mentions || entities.user_mentions || [],
-      photos:
-        tweet.photos ||
-        (entities.media || []).filter((media) => media.type === "photo") ||
-        [],
-      urls: tweet.urls || entities.urls || [],
-      videos:
-        tweet.videos ||
-        (entities.media || []).filter((media) => media.type === "video") ||
-        [],
-      likes: parseInt(tweet.like_count || legacy.favorite_count) || 0,
-      retweets: parseInt(tweet.retweet_count || legacy.retweet_count) || 0,
-      replies: parseInt(tweet.reply_count || legacy.reply_count) || 0,
-      quotes: parseInt(tweet.quote_count || legacy.quote_count) || 0,
-      permanentUrl: `https://twitter.com/${
-        tweet.username || core.screen_name
-      }/status/${tweet.rest_id || tweet.id}`,
-      isRetweet: !!(tweet.text?.startsWith("RT @") || legacy.retweeted_status),
-      isReply: !!(tweet.inReplyToStatusId || legacy.in_reply_to_status_id_str),
-      quotedTweet: quoted
-        ? {
-            id: quoted.rest_id || quoted.id,
-            text: quoted.text || quotedLegacy.full_text,
-            username: quoted.core?.user_results?.result?.legacy?.screen_name,
-            createdAt: quotedCreatedAt ? quotedCreatedAt.toISOString() : null,
-          }
-        : null,
-      quotedTweetId: tweet.quoted_status_id_str || legacy.quoted_status_id_str,
-      lang: tweet.lang || legacy.lang,
-      source: tweet.source || legacy.source,
-    };
-  } catch (error) {
-    console.error(`Error processing tweet: ${error.message}`);
-    return {
-      id: tweet.rest_id || tweet.id || "unknown",
-      text: tweet.text || "Error processing tweet",
-      createdAt: null,
-      timestamp: null,
-      error: error.message,
-    };
-  }
-}
-
-function processTweetForFinetuning(tweet, allTweets) {
-  if (tweet.isRetweet || !tweet.text) {
-    return null;
-  }
-
-  // Clean the text while preserving important formatting
-  let cleanText = tweet.text
-    .replace(/https?:\/\/\S+/g, "") // Remove URLs
-    .replace(/\s+/g, " ") // Normalize whitespace
-    .trim();
-
-  if (!cleanText) {
-    return null;
-  }
-
-  // For replies, format with context
-  if (tweet.isReply && tweet.inReplyToStatusId) {
-    const parentTweet = allTweets.find((t) => t.id === tweet.inReplyToStatusId);
-    if (parentTweet) {
-      const parentText = parentTweet.text
-        .replace(/https?:\/\/\S+/g, "")
+      // Remove URLs and Hashtags from text
+      let cleanText = tweet.text
+        .replace(/(?:https?:\/\/|www\.)[^\s]+/g, "") // Remove URLs
+        .replace(/#[^\s#]+/g, "") // Remove Hashtags
         .replace(/\s+/g, " ")
         .trim();
 
       return {
-        text: `<human>: ${parentText}\nDegenSpartan: ${cleanText}`,
-        metadata: {
-          id: tweet.id,
-          type: "reply",
-          created_at: tweet.createdAt,
-          engagement: {
-            likes: tweet.likes,
-            retweets: tweet.retweets,
-            replies: tweet.replies,
-            quotes: tweet.quotes,
-          },
-          in_reply_to: {
-            tweet_id: tweet.inReplyToStatusId,
-          },
-          url: tweet.permanentUrl,
-        },
+        id: tweet.id,
+        text: cleanText, // Exclude username
+        username: tweet.username || "unknown",
+        createdAt: createdAt ? createdAt.toISOString() : null,
+        timestamp: createdAt ? createdAt.getTime() : null,
+        isReply: !!tweet.isReply,
+        inReplyToStatusId: tweet.inReplyToStatusId || null,
+        inReplyToUsername: tweet.inReplyToUsername || "unknown",
+        photos: (tweet.photos || []).filter((media) => media.type === "photo"),
+        videos: (tweet.videos || []).filter((media) => media.type === "video"),
+        // Exclude the 'urls' field by setting it to an empty array
+        urls: [],
+        likes: likes,
+        retweetCount: retweetCount,
+        replies: replies,
+        quotes:
+          typeof tweet.quotes === "number"
+            ? tweet.quotes
+            : parseInt(tweet.quotes) || 0,
+        permanentUrl:
+          tweet.permanentUrl ||
+          `https://twitter.com/${tweet.username}/status/${tweet.id}`,
+        quotedTweet: tweet.quotedTweet || null,
+        isRetweet: isRetweet,
+      };
+    } catch (error) {
+      Logger.warn(`⚠️ Error processing tweet ID ${tweet.id}: ${error.message}`);
+      return {
+        id: tweet.id || "unknown",
+        text: tweet.text || "Error processing tweet",
+        timestamp: null,
+        error: error.message,
       };
     }
   }
 
-  // For standalone tweets
-  return {
-    text: `DegenSpartan: ${cleanText}`,
-    metadata: {
-      id: tweet.id,
-      type: "tweet",
-      created_at: tweet.createdAt,
-      engagement: {
-        likes: tweet.likes,
-        retweets: tweet.retweets,
-        replies: tweet.replies,
-        quotes: tweet.quotes,
-      },
-      url: tweet.permanentUrl,
-    },
-  };
-}
-
-async function generateFinetuningData(tweets, config) {
-  console.log("\n📚 Generating fine-tuning dataset...");
-
-  const finetuningData = tweets
-    .map((tweet) => processTweetForFinetuning(tweet, tweets))
-    .filter((entry) => entry !== null);
-
-  // Sort by engagement score (weighted)
-  finetuningData.sort((a, b) => {
-    const scoreA =
-      a.metadata.engagement.likes * 2 + a.metadata.engagement.retweets;
-    const scoreB =
-      b.metadata.engagement.likes * 2 + b.metadata.engagement.retweets;
-    return scoreB - scoreA;
-  });
-
-  const jsonlContent = finetuningData
-    .map((entry) => JSON.stringify(entry))
-    .join("\n");
-
-  fs.writeFileSync(config.paths.finetuning, jsonlContent);
-
-  console.log(`✅ Generated ${finetuningData.length} fine-tuning examples`);
-  console.log(`📊 Dataset statistics:`);
-  console.log(
-    `   - Standalone tweets: ${
-      finetuningData.filter((d) => d.metadata.type === "tweet").length
-    }`
-  );
-  console.log(
-    `   - Conversations: ${
-      finetuningData.filter((d) => d.metadata.type === "reply").length
-    }`
-  );
-
-  // Show sample of high-engagement content
-  console.log("\n🌟 Sample entries:");
-  finetuningData.slice(0, 3).forEach((entry, i) => {
-    const engagement = entry.metadata.engagement;
-    console.log(
-      `\n${i + 1}. [${entry.metadata.type}] (❤️ ${engagement.likes} 🔄 ${
-        engagement.retweets
-      })`
-    );
-    console.log(`   ${entry.text}`);
-  });
-
-  return finetuningData;
-}
-
-async function getAllUserTweets(scraper, config, history) {
-  console.log(
-    `\n📱 Collecting tweets and replies from @${config.targetAccount}...`
-  );
-  const tweets = new Set();
-  let cursor = null;
-  let retryCount = 0;
-  const rateLimiter = new RateLimiter(config.twitter.rateLimitDelay);
-  const searchLimiter = new RateLimiter(config.twitter.searchSearchDelay);
-  let foundNewTweets = false;
-
-  try {
-    const profile = await scraper.getProfile(config.targetAccount);
-    const totalTweets = profile.tweetsCount;
-    console.log(
-      `\nFound ${totalTweets} total tweets/replies for @${config.targetAccount}`
-    );
-    console.log(`Previously collected: ${history.size} tweets`);
-
-    const bar = new ProgressBar("[:bar] :current/:total items (:percent)", {
-      total: totalTweets,
-      width: 30,
-      complete: "=",
-      incomplete: " ",
-    });
-
-    // Timeline collection loop
-    while (true) {
-      try {
-        await rateLimiter.wait();
-
-        const tweetsStream = scraper.getTweets(
-          config.targetAccount,
-          config.twitter.batchSize,
-          cursor
-        );
-
-        let batchCount = 0;
-        let newInBatch = 0;
-        let lastId = null;
-        let consecutiveKnown = 0;
-
-        for await (const tweet of tweetsStream) {
-          const tweetObj = processTweetData(tweet);
-          lastId = tweetObj.id;
-
-          if (tweetObj.isRetweet) continue;
-
-          if (!history.isKnown(tweetObj.id)) {
-            if (!Array.from(tweets).some((t) => t.id === tweetObj.id)) {
-              tweets.add(tweetObj);
-              history.addTweet(tweetObj.id);
-              newInBatch++;
-              foundNewTweets = true;
-            }
-          } else {
-            consecutiveKnown++;
-          }
-
-          batchCount++;
-          bar.tick();
-
-          // If we've seen too many known tweets in a row, we can assume we've caught up
-          if (consecutiveKnown > 50) {
-            console.log(
-              "\n📊 Found sequence of known tweets, assuming caught up!"
-            );
-            break;
-          }
-        }
-
-        if (batchCount === 0 || consecutiveKnown > 50) {
-          console.log("\n📊 Reached end of new tweets!");
-          break;
-        }
-
-        cursor = lastId;
-        retryCount = 0;
-        if (newInBatch > 0) {
-          console.log(`\nCollected ${tweets.size} new items so far...`);
-        }
-
-        await new Promise((r) =>
-          setTimeout(r, config.twitter.delayBetweenBatches)
-        );
-      } catch (error) {
-        console.warn(`\n⚠️ Error: ${error.message}`);
-        retryCount++;
-
-        if (retryCount >= config.twitter.maxRetries) {
-          if (tweets.size > 0) {
-            console.log(
-              "Max retries reached. Continuing with collected items..."
-            );
-            break;
-          }
-          throw error;
-        }
-
-        console.log(
-          `Retrying in ${
-            config.twitter.retryDelay / 1000
-          } seconds... (${retryCount}/${config.twitter.maxRetries})`
-        );
-        await new Promise((r) => setTimeout(r, config.twitter.retryDelay));
+  parseTweetDate(dateStr, timestampSec = null) {
+    try {
+      if (!dateStr && !timestampSec) {
+        Logger.warn(`⚠️ Missing date string and timestamp.`);
+        return null;
       }
-    }
 
-    // Additional search for replies
-    if (foundNewTweets) {
-      console.log("\n🔍 Searching for additional replies...");
-      let searchCursor;
-      retryCount = 0;
+      let parsed;
+
+      if (dateStr) {
+        if (typeof dateStr === "string") {
+          parsed = new Date(dateStr);
+        } else if (typeof dateStr === "number") {
+          parsed = new Date(dateStr);
+        }
+      }
+
+      if (timestampSec && !parsed) {
+        parsed = new Date(timestampSec * 1000);
+      }
+
+      if (!isValid(parsed)) {
+        Logger.warn(`⚠️ Invalid date found: ${dateStr || timestampSec}`);
+        return null;
+      }
+
+      return parsed;
+    } catch (error) {
+      Logger.warn(
+        `⚠️ Error parsing date: ${dateStr || timestampSec} - ${error.message}`
+      );
+      return null;
+    }
+  }
+
+  async collectTweets(scraper) {
+    const tweets = [];
+    const rateLimiter = new RateLimiter(this.config.twitter.rateLimitDelay);
+    const searchLimiter = new RateLimiter(this.config.twitter.searchDelay);
+
+    try {
+      const profile = await scraper.getProfile(this.username);
+      const totalTweets = profile.tweetsCount;
+
+      Logger.info(
+        `📊 Found ${chalk.bold(
+          totalTweets.toLocaleString()
+        )} total tweets/replies for @${this.username}`
+      );
+
+      const bar = new ProgressBar("[:bar] :current/:total tweets (:percent)", {
+        total: totalTweets,
+        width: 30,
+        complete: "=",
+        incomplete: " ",
+      });
+
+      let cursor = null;
+      let consecutiveKnown = 0;
 
       while (true) {
-        try {
-          await searchLimiter.wait();
+        await rateLimiter.wait();
 
-          const searchResults = await scraper.fetchSearchTweets(
-            `from:${config.targetAccount} filter:replies`,
-            config.twitter.searchBatchSize,
-            SearchMode.Latest,
-            searchCursor
+        try {
+          const tweetsStream = scraper.getTweets(
+            this.username,
+            this.config.twitter.batchSize,
+            cursor
           );
 
-          if (!searchResults?.tweets?.length) {
-            console.log("\n📊 No more replies found!");
-            break;
-          }
+          let batchCount = 0;
+          let lastId = null;
 
-          let newCount = 0;
-          let consecutiveKnown = 0;
+          for await (const tweet of tweetsStream) {
+            const tweetObj = this.processTweetData(tweet);
+            lastId = tweetObj.id;
 
-          for (const tweet of searchResults.tweets) {
-            const tweetObj = processTweetData(tweet);
-
-            if (tweetObj.isRetweet) continue;
-
-            if (!history.isKnown(tweetObj.id)) {
-              if (!Array.from(tweets).some((t) => t.id === tweetObj.id)) {
-                tweets.add(tweetObj);
-                history.addTweet(tweetObj.id);
-                newCount++;
-              }
+            if (!this.history.isKnown(tweetObj.id)) {
+              tweets.push(tweetObj);
+              this.history.addTweet(tweetObj.id);
+              bar.tick();
+              consecutiveKnown = 0;
             } else {
               consecutiveKnown++;
             }
 
-            bar.tick();
+            batchCount++;
 
             if (consecutiveKnown > 50) {
-              console.log(
-                "\n📊 Found sequence of known replies, assuming caught up!"
+              Logger.info(
+                "\n📈 Reached a sequence of known tweets, assuming caught up."
               );
               break;
             }
           }
 
-          if (newCount === 0 && !searchResults.next_cursor) {
-            console.log("\n📊 No new replies found!");
+          if (batchCount === 0 || consecutiveKnown > 50) {
             break;
           }
 
-          searchCursor = searchResults.next_cursor;
-          if (newCount > 0) {
-            console.log(`\nFound ${newCount} new replies...`);
-          }
-
+          cursor = lastId;
           await new Promise((r) =>
-            setTimeout(r, config.twitter.delayBetweenBatches)
+            setTimeout(r, this.config.twitter.delayBetweenBatches)
           );
-          retryCount = 0;
         } catch (error) {
-          console.warn(`\n⚠️ Error in reply search: ${error.message}`);
-          retryCount++;
-
-          if (retryCount >= config.twitter.maxRetries) {
-            console.log("Max retries reached for reply search. Moving on...");
-            break;
-          }
-
-          await new Promise((r) => setTimeout(r, config.twitter.retryDelay));
+          Logger.warn(`⚠️ Error collecting tweets: ${error.message}`);
+          await new Promise((r) =>
+            setTimeout(r, this.config.twitter.retryDelay)
+          );
         }
       }
-    }
-  } catch (error) {
-    console.error("\n❌ Failed to collect tweets:", error.message);
-    if (tweets.size === 0) {
-      throw error;
-    } else {
-      console.log("Continuing with partially collected data...");
-    }
-  }
 
-  // Save the updated history
-  history.saveHistory();
+      if (this.tweetFilter.options.tweetTypes?.includes("replies")) {
+        Logger.info("\n🔍 Searching for additional replies...");
+        let searchCursor = null;
 
-  // If we found new tweets, merge them with existing ones
-  if (foundNewTweets && fs.existsSync(config.paths.tweets)) {
-    try {
-      const existingTweets = JSON.parse(
-        fs.readFileSync(config.paths.tweets, "utf8")
-      );
-      const allTweets = new Set([...existingTweets, ...tweets]);
-      return Array.from(allTweets);
+        while (true) {
+          await searchLimiter.wait();
+
+          try {
+            const searchResults = await scraper.fetchSearchTweets(
+              `from:${this.username} filter:replies`,
+              this.config.twitter.searchBatchSize,
+              SearchMode.Latest,
+              searchCursor
+            );
+
+            if (!searchResults?.tweets?.length) {
+              Logger.info("\n📊 No more replies found!");
+              break;
+            }
+
+            let newCount = 0;
+            let consecutiveKnownReplies = 0;
+
+            for (const tweet of searchResults.tweets) {
+              const tweetObj = this.processTweetData(tweet);
+
+              if (!this.history.isKnown(tweetObj.id)) {
+                tweets.push(tweetObj);
+                this.history.addTweet(tweetObj.id);
+                bar.tick();
+                newCount++;
+                consecutiveKnownReplies = 0;
+              } else {
+                consecutiveKnownReplies++;
+              }
+
+              if (consecutiveKnownReplies > 50) {
+                Logger.info(
+                  "\n📈 Reached a sequence of known replies, assuming caught up."
+                );
+                break;
+              }
+            }
+
+            if (newCount === 0 && !searchResults.next_cursor) {
+              Logger.info("\n📊 No new replies found!");
+              break;
+            }
+
+            searchCursor = searchResults.next_cursor;
+            await new Promise((r) =>
+              setTimeout(r, this.config.twitter.delayBetweenBatches)
+            );
+          } catch (error) {
+            Logger.warn(`⚠️ Error searching replies: ${error.message}`);
+            await new Promise((r) =>
+              setTimeout(r, this.config.twitter.retryDelay)
+            );
+          }
+        }
+      }
+
+      this.history.saveHistory();
     } catch (error) {
-      console.warn("⚠️ Error merging with existing tweets:", error.message);
+      Logger.error(`❌ Failed to collect tweets: ${error.message}`);
+      if (tweets.length === 0) {
+        throw error;
+      } else {
+        Logger.warn("⚠️ Continuing with partially collected data...");
+      }
     }
+
+    return tweets;
   }
 
-  return Array.from(tweets);
-}
+  async run() {
+    const startTime = Date.now();
 
-async function saveData(tweets, config) {
-  try {
-    if (tweets.length === 0) {
-      console.log("\nℹ️ No new data to save");
-      return;
-    }
-
-    // Save raw tweets
-    fs.writeFileSync(config.paths.tweets, JSON.stringify(tweets, null, 2));
+    console.log("\n" + chalk.bold.blue("🐦 Twitter Data Collection Pipeline"));
     console.log(
-      `\n✅ Saved ${tweets.length} total items to ${config.paths.tweets}`
+      chalk.bold(`Target Account: ${chalk.cyan("@" + this.username)}\n`)
     );
 
-    // Save URLs
-    const urls = tweets.map((tweet) => tweet.permanentUrl);
-    fs.writeFileSync(config.paths.tweetUrls, urls.join("\n"));
-    console.log(`✅ Saved URLs to ${config.paths.tweetUrls}`);
-
-    // Generate fine-tuning data
-    await generateFinetuningData(tweets, config);
-
-    // Print collection statistics
-    const directTweets = tweets.filter((t) => !t.isReply);
-    const replies = tweets.filter((t) => t.isReply);
-
-    console.log("\n📊 Collection Statistics:");
-    console.log(`   - Total items collected: ${tweets.length}`);
-    console.log(`   - Direct tweets: ${directTweets.length}`);
-    console.log(`   - Replies to others: ${replies.length}`);
-
-    const validDates = tweets
-      .map((t) => t.timestamp)
-      .filter((timestamp) => timestamp !== null);
-
-    if (validDates.length > 0) {
-      const dateRange = {
-        earliest: new Date(Math.min(...validDates)),
-        latest: new Date(Math.max(...validDates)),
-      };
-      console.log(
-        `   - Date range: ${
-          dateRange.earliest.toISOString().split("T")[0]
-        } to ${dateRange.latest.toISOString().split("T")[0]}`
-      );
-
-      const totalLikes = tweets.reduce((sum, t) => sum + (t.likes || 0), 0);
-      const totalRetweets = tweets.reduce(
-        (sum, t) => sum + (t.retweets || 0),
-        0
-      );
-      const totalReplies = tweets.reduce((sum, t) => sum + (t.replies || 0), 0);
-      console.log(`   - Total engagement:`);
-      console.log(`     • Likes: ${totalLikes.toLocaleString()}`);
-      console.log(`     • Retweets: ${totalRetweets.toLocaleString()}`);
-      console.log(`     • Replies: ${totalReplies.toLocaleString()}`);
-    }
-  } catch (error) {
-    console.error("\n❌ Error saving data:", error.message);
-    throw error;
-  }
-}
-
-async function runPipeline(username) {
-  const config = getConfigForUser(username);
-  console.log(`🚀 Starting Twitter Pipeline for @${config.targetAccount}\n`);
-  let scraper = null;
-  const startTime = Date.now();
-
-  try {
-    setupDirectories();
-    validateEnvironment();
-
-    const history = new TweetHistory(config.paths.history);
-
-    console.log("1️⃣ Initializing Twitter scraper...");
-    scraper = await initializeScraper();
-
-    console.log("2️⃣ Collecting tweets and replies...");
-    const allContent = await getAllUserTweets(scraper, config, history);
-
-    console.log("3️⃣ Saving collected data...");
-    await saveData(allContent, config);
-
-    await scraper?.logout();
-    const duration = (Date.now() - startTime) / 1000;
-    console.log(
-      `\n🎉 Pipeline completed successfully in ${duration.toFixed(1)} seconds!`
-    );
-  } catch (error) {
-    console.error("\n❌ Pipeline failed:", error.message);
     try {
-      await scraper?.logout();
-    } catch (logoutError) {
-      console.error("Error during logout:", logoutError.message);
+      await this.tweetFilter.promptCollectionMode();
+
+      await this.validateEnvironment();
+      Logger.info("✅ Environment validated.");
+
+      Logger.info("🔍 Initializing scraper...");
+      this.scraper = await this.initializeScraper();
+
+      Logger.startSpinner("Fetching account information");
+      const profile = await this.scraper.getProfile(this.username);
+      Logger.stopSpinner();
+
+      Logger.info(
+        `📊 Found ${chalk.bold(
+          profile.tweetsCount.toLocaleString()
+        )} tweets for @${this.username}`
+      );
+
+      Logger.startSpinner(`Collecting tweets from @${this.username}`);
+      const allTweets = await this.collectTweets(this.scraper);
+      Logger.stopSpinner();
+
+      Logger.info(`✅ Total tweets collected: ${allTweets.length}`);
+
+      let filteredTweets = allTweets;
+      if (
+        this.tweetFilter.options.tweetTypes?.length !== 4 ||
+        this.tweetFilter.options.filterByEngagement ||
+        this.tweetFilter.options.filterByDate ||
+        this.tweetFilter.options.excludeKeywords
+      ) {
+        Logger.startSpinner("Applying filters");
+        filteredTweets = allTweets.filter((tweet) =>
+          this.tweetFilter.shouldIncludeTweet(tweet)
+        );
+        Logger.stopSpinner();
+
+        Logger.info(
+          `⚙️ Filtered out ${chalk.yellow(
+            allTweets.length - filteredTweets.length
+          )} tweets based on criteria`
+        );
+      }
+
+      if (filteredTweets.length === 0) {
+        Logger.warn("⚠️ No tweets matched the specified criteria.");
+        Logger.success("🎉 Pipeline completed with no tweets saved.");
+        await this.scraper.logout();
+        Logger.success("🔒 Logged out successfully.");
+        return;
+      }
+
+      Logger.startSpinner("Processing and saving data");
+      const analytics = await this.dataOrganizer.saveTweets(filteredTweets);
+      Logger.stopSpinner();
+
+      Logger.stats("📈 Collection Results", {
+        "Total Tweets Found": allTweets.length,
+        "Tweets Saved": filteredTweets.length,
+        "Direct Tweets": analytics.directTweets,
+        Replies: analytics.replies,
+        "Retweets (retweeted tweets)": analytics.retweets,
+        "Total Likes": analytics.engagement.totalLikes.toLocaleString(),
+        "Total Retweet Count": analytics.engagement.totalRetweetCount.toLocaleString(),
+        "Total Replies": analytics.engagement.totalReplies.toLocaleString(),
+        "Date Range": `${analytics.timeRange.start} to ${analytics.timeRange.end}`,
+        "Storage Location": chalk.gray(this.dataOrganizer.baseDir),
+      });
+
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+      Logger.success(`⏰ Pipeline completed in ${duration} seconds`);
+
+      await this.showSampleTweets(filteredTweets);
+
+      await this.scraper.logout();
+      Logger.success("🔒 Logged out successfully.");
+      return analytics;
+    } catch (error) {
+      Logger.error(`❌ Pipeline failed: ${error.message}`);
+      try {
+        if (this.scraper) {
+          await this.scraper.logout();
+          Logger.success("🔒 Logged out successfully.");
+        }
+      } catch (logoutError) {
+        Logger.error(`❌ Error during logout: ${logoutError.message}`);
+      }
+      throw error;
     }
-    process.exit(1);
+  }
+
+  async showSampleTweets(tweets) {
+    const { showSample } = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "showSample",
+        message: "Would you like to see a sample of collected tweets?",
+        default: true,
+      },
+    ]);
+
+    if (showSample) {
+      Logger.info("\n🌟 Sample Tweets:");
+
+      // Exclude retweets and replies
+      const originalTweets = tweets.filter(
+        (tweet) => !tweet.isRetweet && !tweet.isReply
+      );
+
+      if (originalTweets.length === 0) {
+        Logger.warn("No original tweets available to display.");
+        return;
+      }
+
+      // Sort by date descending (newest first)
+      const sortedTweets = originalTweets.sort(
+        (a, b) => b.timestamp - a.timestamp
+      );
+
+      const sampleTweets = sortedTweets.slice(0, 5);
+
+      sampleTweets.forEach((tweet, i) => {
+        console.log(
+          chalk.cyan(
+            `\n${i + 1}. [${format(new Date(tweet.timestamp), "yyyy-MM-dd")}]`
+          )
+        );
+        console.log(chalk.white(tweet.text));
+        console.log(
+          chalk.gray(
+            `❤️ Likes: ${tweet.likes.toLocaleString()} | 🔄 Retweets: ${tweet.retweetCount.toLocaleString()}`
+          )
+        );
+      });
+    }
   }
 }
 
-// Error handling for unhandled rejections
 process.on("unhandledRejection", (error) => {
-  console.error("\n💥 Unhandled promise rejection:", error);
+  Logger.error(`❌ Unhandled promise rejection: ${error.message}`);
   process.exit(1);
 });
 
-// Error handling for uncaught exceptions
 process.on("uncaughtException", (error) => {
-  console.error("\n💥 Uncaught exception:", error);
+  Logger.error(`❌ Uncaught exception: ${error.message}`);
   process.exit(1);
 });
 
-// Handle cleanup on script termination
-process.on("SIGINT", async () => {
-  console.log("\n\n🛑 Received termination signal. Cleaning up...");
+const cleanup = async () => {
+  Logger.warn("\n🛑 Received termination signal. Cleaning up...");
   try {
-    const scraper = new Scraper();
-    await scraper.logout();
+    if (pipeline.scraper) {
+      await pipeline.scraper.logout();
+      Logger.success("🔒 Logged out successfully.");
+    }
   } catch (error) {
-    console.error("Error during cleanup:", error.message);
+    Logger.error(`❌ Error during cleanup: ${error.message}`);
   }
   process.exit(0);
-});
+};
 
-// Handle cleanup on termination
-process.on("SIGTERM", async () => {
-  console.log("\n\n🛑 Received termination signal. Cleaning up...");
-  try {
-    const scraper = new Scraper();
-    await scraper.logout();
-  } catch (error) {
-    console.error("Error during cleanup:", error.message);
-  }
-  process.exit(0);
-});
+process.on("SIGINT", cleanup);
+process.on("SIGTERM", cleanup);
 
-// Get username from command line or use default
-const username = process.argv[2] || "degenspartan";
+const args = process.argv.slice(2);
+const username = args[0] || "degenspartan";
 
-// Start the pipeline with the specified username
-runPipeline(username);
+const pipeline = new TwitterPipeline(username);
+
+pipeline.run().catch(() => process.exit(1));
