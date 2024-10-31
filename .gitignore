@@ -1,12 +1,3 @@
 .env
 node_modules/
-degenspartan_tweet_urls.txt
-degenspartanblogurls.txt
-blog_scraping_errors.json
-*.jsonl
-tweets.json
-backups/
-tweets_cleaned.json
-
 pipeline/
-data/
