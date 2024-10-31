@@ -4,7 +4,11 @@
   "main": "scrapeAndFormat.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "twitter": "node src/twitter/twitter-pipeline.js",
+    "blog": "node src/blog/blogScrape.js",
+    "scrape:all": "npm run twitter && npm run blog",
+    "start": "node src/index.js"
   },
   "keywords": [],
   "author": "",

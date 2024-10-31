@@ -24,10 +24,25 @@ An advanced tool for collecting and analyzing Twitter data with customizable fil
    TWITTER_PASSWORD=your_twitter_password
    ```
 
-3. Run the pipeline:
-   ```bash
-   npm start username
-   ```
+## Available Scripts
+
+### Twitter Scraper
+```bash
+npm run twitter -- username
+```
+Example: `npm run twitter -- elonmusk`
+
+### Blog Scraper
+```bash
+npm run blog
+```
+Runs the blog scraping pipeline.
+
+### Run All Scrapers
+```bash
+npm run scrape:all
+```
+Runs both Twitter and blog scrapers sequentially.
 
 ## Output
 
@@ -39,12 +54,21 @@ The pipeline creates a dated directory structure:
 
 ## Examples
 
-Collect all tweets:
+Collect tweets for a specific user:
 ```bash
-node script.js elonmusk
+npm run twitter -- elonmusk
 ```
 
 Show help:
 ```bash
-node script.js --help
+node src/twitter/twitter-pipeline.js --help
+```
+
+## Directory Structure
+```
+/src
+  /twitter
+    - twitter-pipeline.js
+  /blog
+    - blogScrape.js
 ```
