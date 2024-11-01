@@ -2,6 +2,8 @@
 
 Pipeline for generating AI character files and training datasets by scraping public figures' online presence across Twitter and blogs.
 
+> ⚠️ **IMPORTANT**: Create a new Twitter account for this tool. DO NOT use your main account as it may trigger Twitter's automation detection and result in account restrictions.
+
 ## Setup
 
 1. Install dependencies:
