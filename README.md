@@ -41,6 +41,6 @@ npm run blog
 
 ### Generate Character
 ```bash
-npm run generate:character -- username
+npm run character -- username
 ```
-Example: `npm run generate:character -- pmarca`
+Example: `npm run character -- pmarca`
