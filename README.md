@@ -56,7 +56,12 @@ The pipeline creates a dated directory structure:
 
 Collect tweets for a specific user:
 ```bash
-npm run twitter -- elonmusk
+npm run twitter -- pmarca
+```
+
+Generate a Character file for a specific user:
+```bash
+npm run generate:character -- pmarca
 ```
 
 Show help:
