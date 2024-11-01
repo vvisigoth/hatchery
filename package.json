@@ -4,11 +4,8 @@
   "main": "scrapeAndFormat.js",
   "type": "module",
 "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "twitter": "node src/twitter/index.js",
     "blog": "node src/blog/blogScrape.js",
-    "scrape:all": "npm run twitter && npm run blog",
-    "start": "node src/index.js",
     "generate:character": "node src/character/GenerateCharacter.js"
   },
   "keywords": [],
