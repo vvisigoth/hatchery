@@ -1,15 +1,6 @@
-# Twitter Data Collection Pipeline
+# Degen Scraper
 
-Collect and analyze Twitter data with customizable filters and analytics.
-
-## Features
-
-- Tweet collection with filters
-- Interactive configuration
-- Analytics and engagement metrics
-- Progress tracking
-- Rate limiting and error handling
-- Organized data exports
+Pipeline for generating AI character files and training datasets by scraping public figures' online presence across Twitter and blogs.
 
 ## Setup
 
@@ -26,13 +17,13 @@ TWITTER_PASSWORD=your_twitter_password
 
 ## Usage
 
-### Twitter Scraper
+### Twitter Collection
 ```bash
 npm run twitter -- username
 ```
 Example: `npm run twitter -- pmarca`
 
-### Blog Scraper
+### Blog Collection
 ```bash
 npm run blog
 ```
@@ -43,9 +34,9 @@ npm run generate:character -- username
 ```
 Example: `npm run generate:character -- pmarca`
 
-## Output Directory
+## Output
 
-- `/raw` - Raw tweet data
-- `/processed` - Processed data
-- `/analytics` - Statistics and metrics
-- `/exports` - Summary reports
+- `/datasets` - Training datasets
+- `/characters` - Generated character files
+- `/raw` - Source data
+- `/processed` - Cleaned data
