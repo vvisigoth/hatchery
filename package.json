@@ -9,7 +9,7 @@
     "character": "node src/character/GenerateCharacter.js"
   },
   "keywords": [],
-  "author": "dreaminglucid22",
+  "author": "dreaminglucid",
   "license": "MIT",
   "description": "",
   "dependencies": {
