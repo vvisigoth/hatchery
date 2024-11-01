@@ -5,15 +5,26 @@ Pipeline for generating AI character files and training datasets by scraping pub
 ## Setup
 
 1. Install dependencies:
-```bash
-npm install
-```
+   ```bash
+   npm install
+   ```
 
-2. Create `.env` file:
-```
-TWITTER_USERNAME=your_twitter_username
-TWITTER_PASSWORD=your_twitter_password
-```
+2. Copy the `.env.example` into a `.env` file:
+   ```properties
+   # (Required) Twitter Authentication
+   TWITTER_USERNAME=     # your twitter username
+   TWITTER_PASSWORD=     # your twitter password
+
+   # (Optional) Blog Configuration
+   BLOG_URLS_FILE=      # path to file containing blog URLs
+
+   # (Optional) Scraping Configuration
+   MAX_TWEETS=          # max tweets to scrape
+   MAX_RETRIES=         # max retries for scraping
+   RETRY_DELAY=         # delay between retries
+   MIN_DELAY=           # minimum delay between requests
+   MAX_DELAY=           # maximum delay between requests
+   ```
 
 ## Usage
 
