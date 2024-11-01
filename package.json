@@ -1,7 +1,7 @@
 {
   "name": "data_scraper",
   "version": "1.0.0",
-  "main": "scrapeAndFormat.js",
+  "main": "",
   "type": "module",
 "scripts": {
     "twitter": "node src/twitter/index.js",
