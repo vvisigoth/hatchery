@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "main": "scrapeAndFormat.js",
   "type": "module",
-  "scripts": {
+"scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "twitter": "node src/twitter/index.js",
     "blog": "node src/blog/blogScrape.js",
     "scrape:all": "npm run twitter && npm run blog",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "generate:character": "node src/character/GenerateCharacter.js"
   },
   "keywords": [],
   "author": "",
