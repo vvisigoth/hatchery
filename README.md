@@ -44,10 +44,3 @@ npm run blog
 npm run generate:character -- username
 ```
 Example: `npm run generate:character -- pmarca`
-
-## Output
-
-- `/datasets` - Training datasets
-- `/characters` - Generated character files
-- `/raw` - Source data
-- `/processed` - Cleaned data
