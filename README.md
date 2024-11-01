@@ -30,7 +30,7 @@ An advanced tool for collecting and analyzing Twitter data with customizable fil
 ```bash
 npm run twitter -- username
 ```
-Example: `npm run twitter -- elonmusk`
+Example: `npm run twitter -- pmarca`
 
 ### Blog Scraper
 ```bash
