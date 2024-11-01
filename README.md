@@ -1,30 +1,30 @@
 # Twitter Data Collection Pipeline
 
-An advanced tool for collecting and analyzing Twitter data with customizable filters and detailed analytics.
+Collect and analyze Twitter data with customizable filters and analytics.
 
 ## Features
 
-- Complete or filtered tweet collection
+- Tweet collection with filters
 - Interactive configuration
-- Detailed analytics and engagement metrics
-- Progress tracking and elegant logging
-- Automatic rate limiting and error handling
-- Data organization with exports
+- Analytics and engagement metrics
+- Progress tracking
+- Rate limiting and error handling
+- Organized data exports
 
 ## Setup
 
 1. Install dependencies:
-   ```bash
-   npm install
-   ```
+```bash
+npm install
+```
 
-2. Create a .env file:
-   ```
-   TWITTER_USERNAME=your_twitter_username
-   TWITTER_PASSWORD=your_twitter_password
-   ```
+2. Create `.env` file:
+```
+TWITTER_USERNAME=your_twitter_username
+TWITTER_PASSWORD=your_twitter_password
+```
 
-## Available Scripts
+## Usage
 
 ### Twitter Scraper
 ```bash
@@ -36,44 +36,16 @@ Example: `npm run twitter -- pmarca`
 ```bash
 npm run blog
 ```
-Runs the blog scraping pipeline.
 
-### Run All Scrapers
+### Generate Character
 ```bash
-npm run scrape:all
+npm run generate:character -- username
 ```
-Runs both Twitter and blog scrapers sequentially.
+Example: `npm run generate:character -- pmarca`
 
-## Output
+## Output Directory
 
-The pipeline creates a dated directory structure:
-- /raw - Raw tweet data and URLs
-- /processed - Processed data and history
-- /analytics - Statistics and engagement metrics
-- /exports - Human-readable summaries
-
-## Examples
-
-Collect tweets for a specific user:
-```bash
-npm run twitter -- pmarca
-```
-
-Generate a Character file for a specific user:
-```bash
-npm run generate:character -- pmarca
-```
-
-Show help:
-```bash
-node src/twitter/twitter-pipeline.js --help
-```
-
-## Directory Structure
-```
-/src
-  /twitter
-    - twitter-pipeline.js
-  /blog
-    - blogScrape.js
-```
+- `/raw` - Raw tweet data
+- `/processed` - Processed data
+- `/analytics` - Statistics and metrics
+- `/exports` - Summary reports
