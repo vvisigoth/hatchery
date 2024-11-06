@@ -31,7 +31,7 @@ class TweetProcessor {
   getDefaultCharacterData() {
     return {
       name: this.username,
-      clients: ["discord", "direct", "telegram"],
+      clients: ["discord", "direct", "twitter", "telegram"],
       settings: {
         model: "gpt-4-mini",
         embeddingModel: "text-embedding-3-small",
@@ -205,7 +205,7 @@ class TweetProcessor {
             text.length >= 20 && // Reduced minimum length requirement
             text.length <= 280
         )
-        .slice(0, 10000); // Keep top 10000 examples
+        .slice(0, 100000); // Keep top 10000 examples
 
       // Extract potential topics from tweets
       const topics = new Set();
