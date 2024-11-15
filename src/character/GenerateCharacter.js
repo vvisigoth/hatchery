@@ -33,7 +33,7 @@ class TweetProcessor {
       name: this.username,
       clients: ["discord", "direct", "twitter", "telegram"],
       settings: {
-        model: "gpt-4-mini",
+        model: "gpt-4o-mini",
         embeddingModel: "text-embedding-3-small",
         secrets: {},
         voice: {
