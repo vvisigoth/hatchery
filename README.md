@@ -46,3 +46,13 @@ npm run blog
 npm run character -- username
 ```
 Example: `npm run character -- pmarca`
+
+### Finetune
+```bash
+npm run finetune
+```
+
+### Finetune (with test)
+```bash
+npm run finetune:test
+```
