@@ -29,6 +29,13 @@ class TwitterPipeline {
     this.paths = this.dataOrganizer.getPaths();
     this.tweetFilter = new TweetFilter();
 
+    // Update cookie path to be in top-level cookies directory
+    this.paths.cookies = path.join(
+      process.cwd(),
+      'cookies',
+      `${process.env.TWITTER_USERNAME}_cookies.json`
+    );
+
     // Enhanced configuration with fallback handling
     this.config = {
       twitter: {
@@ -118,6 +125,117 @@ class TwitterPipeline {
     Logger.stopSpinner();
   }
 
+async loadCookies() {
+    try {
+      if (await fs.access(this.paths.cookies).catch(() => false)) {
+        const cookiesData = await fs.readFile(this.paths.cookies, 'utf-8');
+        const cookies = JSON.parse(cookiesData);
+        await this.scraper.setCookies(cookies);
+        return true;
+      }
+    } catch (error) {
+      Logger.warn(`Failed to load cookies: ${error.message}`);
+    }
+    return false;
+}
+
+async saveCookies() {
+    try {
+      const cookies = await this.scraper.getCookies();
+      // Create cookies directory if it doesn't exist
+      await fs.mkdir(path.dirname(this.paths.cookies), { recursive: true });
+      await fs.writeFile(this.paths.cookies, JSON.stringify(cookies));
+      Logger.success('Saved authentication cookies');
+    } catch (error) {
+      Logger.warn(`Failed to save cookies: ${error.message}`);
+    }
+}
+
+
+  async initializeScraper() {
+    Logger.startSpinner("Initializing Twitter scraper");
+    let retryCount = 0;
+
+    // Try loading cookies first
+    if (await this.loadCookies()) {
+      try {
+        if (await this.scraper.isLoggedIn()) {
+          Logger.success("✅ Successfully authenticated with saved cookies");
+          Logger.stopSpinner();
+          return true;
+        }
+      } catch (error) {
+        Logger.warn("Saved cookies are invalid, attempting fresh login");
+      }
+    }
+
+    // Verify all required credentials are present
+    const username = process.env.TWITTER_USERNAME;
+    const password = process.env.TWITTER_PASSWORD;
+    const email = process.env.TWITTER_EMAIL;
+
+    if (!username || !password || !email) {
+      Logger.error("Missing required credentials. Need username, password, AND email");
+      Logger.stopSpinner(false);
+      return false;
+    }
+
+    // Attempt login with email verification
+    while (retryCount < this.config.twitter.maxRetries) {
+      try {
+        // Add random delay before login attempt
+        await this.randomDelay(5000, 10000);
+
+        // Always use email in login attempt
+        await this.scraper.login(username, password, email);
+
+        // Verify login success
+        const isLoggedIn = await this.scraper.isLoggedIn();
+        if (isLoggedIn) {
+          await this.saveCookies();
+          Logger.success("✅ Successfully authenticated with Twitter");
+          Logger.stopSpinner();
+          return true;
+        } else {
+          throw new Error("Login verification failed");
+        }
+
+      } catch (error) {
+        retryCount++;
+        Logger.warn(
+          `⚠️  Authentication attempt ${retryCount} failed: ${error.message}`
+        );
+
+        if (retryCount >= this.config.twitter.maxRetries) {
+          Logger.stopSpinner(false);
+          return false;
+        }
+
+        // Exponential backoff with jitter
+        const baseDelay = this.config.twitter.retryDelay * Math.pow(2, retryCount - 1);
+        const maxJitter = baseDelay * 0.2; // 20% jitter
+        const jitter = Math.floor(Math.random() * maxJitter);
+        await this.randomDelay(baseDelay + jitter, baseDelay + jitter + 5000);
+      }
+    }
+    return false;
+  }
+
+
+  async randomDelay(min, max) {
+    // Gaussian distribution for more natural delays
+    const gaussianRand = () => {
+      let rand = 0;
+      for (let i = 0; i < 6; i++) rand += Math.random();
+      return rand / 6;
+    };
+
+    const delay = Math.floor(min + gaussianRand() * (max - min));
+    Logger.info(`Waiting ${(delay / 1000).toFixed(1)} seconds...`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  /*
   async initializeScraper() {
     Logger.startSpinner("Initializing Twitter scraper");
     let retryCount = 0;
@@ -160,7 +278,7 @@ class TwitterPipeline {
       }
     }
     return false;
-  }
+  }   */
 
   async randomDelay(min = null, max = null) {
     const minDelay = min || this.config.twitter.minDelayBetweenRequests;
