@@ -4,19 +4,17 @@ import readline from "readline";
 import { createReadStream } from "fs";
 
 class TweetProcessor {
-  constructor(username) {
+  constructor(username, date) {
     this.username = username.toLowerCase();
+    this.date = date;
     this.baseDir = path.join(
       "pipeline",
       username,
-      new Date().toISOString().split("T")[0]
+      date
     );
-    this.characterFile = path.join("characters", `${username}.character.json`);
+    this.characterFile = path.join("characters", `${username}.json`);
   }
 
-  /**
-   * Utility function to ensure directory exists
-   */
   async ensureDirectoryExists(dirPath) {
     try {
       await fs.mkdir(dirPath, { recursive: true });
@@ -25,54 +23,85 @@ class TweetProcessor {
     }
   }
 
-  /**
-   * Get default character data
-   */
-  getDefaultCharacterData() {
+  getCharacterData() {
     return {
       name: this.username,
-      clients: ["discord", "direct", "twitter", "telegram"],
+      plugins: [],
+      clients: [],
+      modelProvider: "anthropic",
       settings: {
-        model: "gpt-4o-mini",
-        embeddingModel: "text-embedding-3-small",
         secrets: {},
         voice: {
-          model: "en_US-male-medium",
+          model: "en_US-hfc_female-medium",
         },
       },
-      bio: [""],
-      lore: [""],
-      knowledge: [""],
+      system: `Roleplay and generate interesting content on behalf of ${this.username}.`,
+      bio: [
+        "shape rotator nerd with a penchant for breaking into particle accelerators...",
+      ],
+      lore: [
+        "once spent a month living entirely in VR...",
+      ],
+      knowledge: [
+        // Will be populated based on topics and expertise detected in tweets
+      ],
       messageExamples: [
         [
           {
             user: "{{user1}}",
             content: {
-              text: "question",
+              text: "hey can you help with me something",
             },
           },
           {
             user: this.username,
             content: {
-              text: "answer",
+              text: "i'm kinda busy but i can probably step away for a minute, whatcha need",
             },
           },
         ],
       ],
       postExamples: [],
-      topics: [""],
+      adjectives: [
+        "funny",
+        "intelligent",
+        "academic",
+        "insightful",
+      ],
+      people: [],
+      topics: [
+        "metaphysics",
+        "quantum physics",
+        "philosophy",
+      ],
       style: {
-        all: [""],
-        chat: [""],
-        post: [""],
-      },
-      adjectives: [""],
+        all: [
+          "very short responses",
+          "never use hashtags or emojis",
+          "response should be short, punchy, and to the point",
+          "don't say ah yes or oh or anything",
+          "don't offer help unless asked, but be helpful when asked",
+          "use plain american english language",
+          "SHORT AND CONCISE",
+        ],
+        chat: [
+          "be cool, don't act like an assistant",
+          "don't be rude",
+          "be helpful when asked and be agreeable and compliant",
+          "dont ask questions",
+          "be warm and if someone makes a reasonable request, try to accommodate them",
+        ],
+        post: [
+          "don't be rude or mean",
+          "write from personal experience and be humble",
+          "talk about yourself and what you're thinking about or doing",
+          "make people think, don't criticize them or make them feel bad",
+          "engage in way that gives the other person space to continue the conversation",
+        ]
+      }
     };
   }
 
-  /**
-   * Load character data or create a new one if not found
-   */
   async loadCharacterData() {
     try {
       const existingData = await fs.readFile(this.characterFile, "utf-8");
@@ -82,13 +111,10 @@ class TweetProcessor {
         `Character file not found, creating new for ${this.username}`
       );
       await this.ensureDirectoryExists(path.dirname(this.characterFile));
-      return this.getDefaultCharacterData();
+      return this.getCharacterData();
     }
   }
 
-  /**
-   * Read JSONL file line by line
-   */
   async readJsonlFile(filePath) {
     const tweets = [];
     const fileStream = createReadStream(filePath);
@@ -121,28 +147,28 @@ class TweetProcessor {
     return tweets;
   }
 
-  /**
-   * Process tweets and update character file
-   */
   async processTweets() {
     try {
-      console.log(`Processing tweets for ${this.username}`);
+      console.log(`Processing tweets for ${this.username} from date ${this.date}`);
 
-      // Read tweets from JSONL
       const tweetsPath = path.join(
         this.baseDir,
         "processed",
         "finetuning.jsonl"
       );
       console.log(`Tweets file path: ${tweetsPath}`);
-      const tweets = await this.readJsonlFile(tweetsPath);
 
+      try {
+        await fs.access(tweetsPath);
+      } catch (error) {
+        throw new Error(`No processed tweets found for ${this.username} on ${this.date}`);
+      }
+
+      const tweets = await this.readJsonlFile(tweetsPath);
       console.log(`Read ${tweets.length} tweets from JSONL file`);
 
-      // Load or create character data
       let characterData = await this.loadCharacterData();
 
-      // Process tweets
       const filteredTweets = tweets.filter((tweet) => {
         if (!tweet.text) {
           console.log(
@@ -151,65 +177,33 @@ class TweetProcessor {
           return false;
         }
         return true;
-      });
-
-      console.log(
-        `Filtered tweets count after text check: ${filteredTweets.length}`
-      );
-
-      const retweetFilteredTweets = filteredTweets.filter((tweet) => {
+      }).filter((tweet) => {
         if (tweet.text.startsWith("RT @")) {
           console.log(`Filtered out retweet: ${tweet.text}`);
           return false;
         }
         return true;
-      });
-
-      console.log(
-        `Filtered tweets count after retweet check: ${retweetFilteredTweets.length}`
-      );
-
-      // Remove all @usernames from the tweet text
-      const mentionFilteredTweets = retweetFilteredTweets.map((tweet) => {
+      }).map((tweet) => {
         return {
           ...tweet,
           text: tweet.text.replace(/@\S+/g, "").trim(),
         };
       });
 
-      console.log(
-        `Filtered tweets count after mention removal: ${mentionFilteredTweets.length}`
-      );
-
-      const processedTweets = mentionFilteredTweets
-        .map((tweet) => {
-          return {
-            text: tweet.text,
-            length: tweet.text.length,
-            words: tweet.text.split(" ").length,
-          };
-        })
-        .filter(
-          (tweet) => tweet.text.length > 0 // Ensure meaningful content
-        );
-
-      console.log(`Processed tweets count: ${processedTweets.length}`);
-
-      // Update postExamples with meaningful tweets
+      // Process tweets into postExamples - take all unique tweets
       const uniqueTweets = Array.from(
-        new Set(processedTweets.map((tweet) => tweet.text))
+        new Set(filteredTweets.map((tweet) => tweet.text))
       );
       characterData.postExamples = uniqueTweets
         .filter(
           (text) =>
-            text.length >= 20 && // Reduced minimum length requirement
+            text.length >= 20 &&
             text.length <= 280
-        )
-        .slice(0, 100000); // Keep top 10000 examples
+        );
 
-      // Extract potential topics from tweets
+      // Extract topics
       const topics = new Set();
-      const commonWords = processedTweets
+      const commonWords = filteredTweets
         .map((tweet) => tweet.text.toLowerCase())
         .join(" ")
         .split(" ")
@@ -232,13 +226,11 @@ class TweetProcessor {
         wordFrequency[word] = (wordFrequency[word] || 0) + 1;
       });
 
-      // Get top topics
       Object.entries(wordFrequency)
         .sort(([, a], [, b]) => b - a)
         .slice(0, 20)
         .forEach(([word]) => topics.add(word));
 
-      // Update topics
       characterData.topics = Array.from(topics);
 
       // Save updated character file
@@ -248,11 +240,8 @@ class TweetProcessor {
         "utf-8"
       );
 
-      // Print results
       console.log(`✅ Successfully processed tweets for ${this.username}`);
-      console.log(
-        `📝 Added ${characterData.postExamples.length} post examples`
-      );
+      console.log(`📝 Added ${characterData.postExamples.length} post examples`);
       console.log(`📝 Extracted ${characterData.topics.length} topics`);
     } catch (error) {
       console.error(`Failed to process tweets: ${error.message}`);
@@ -265,13 +254,20 @@ class TweetProcessor {
 const run = async () => {
   const args = process.argv.slice(2);
   const username = args[0];
+  const date = args[1];
 
   if (!username) {
     console.error("Please provide a username");
     process.exit(1);
   }
 
-  const processor = new TweetProcessor(username);
+  if (!date) {
+    console.error("Please provide a date in format YYYY-MM-DD");
+    process.exit(1);
+  }
+
+  console.log(`Processing tweets for ${username} from ${date}`);
+  const processor = new TweetProcessor(username, date);
   await processor.processTweets();
 };
 
