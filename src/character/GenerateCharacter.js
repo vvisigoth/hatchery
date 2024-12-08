@@ -3,6 +3,13 @@ import path from "path";
 import readline from "readline";
 import { createReadStream } from "fs";
 
+
+// Ideas for improvement:
+// Better use of stopwords to do the TF-IDF
+// Attempt to retcon a bio using LLM (maybe also scrape bio data)
+// Drastically improve style data 
+// Find a way to give better chat examples
+
 class TweetProcessor {
   constructor(username, date) {
     this.username = username.toLowerCase();
