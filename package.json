@@ -25,6 +25,7 @@
     "dotenv": "^16.4.5",
     "fs": "^0.0.1-security",
     "inquirer": "^12.0.1",
+    "natural": "^8.0.1",
     "openai": "^4.73.1",
     "ora": "^8.1.0",
     "progress": "^2.0.3",
@@ -32,6 +33,7 @@
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-adblocker": "^2.13.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "ua-parser-js": "^2.0.0-rc.1"
+    "ua-parser-js": "^2.0.0-rc.1",
+    "wink-pos-tagger": "^2.2.2"
   }
 }

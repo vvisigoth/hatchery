@@ -2,7 +2,8 @@ import fs from "fs/promises";
 import path from "path";
 import readline from "readline";
 import { createReadStream } from "fs";
-
+import natural from "natural";
+import pos from "wink-pos-tagger";
 
 // Ideas for improvement:
 // Better use of stopwords to do the TF-IDF
@@ -209,33 +210,265 @@ class TweetProcessor {
         );
 
       // Extract topics
-      const topics = new Set();
-      const commonWords = filteredTweets
-        .map((tweet) => tweet.text.toLowerCase())
-        .join(" ")
-        .split(" ")
-        .filter(
-          (word) =>
-            word.length > 4 &&
-            ![
-              "https",
-              "would",
-              "could",
-              "should",
-              "their",
-              "there",
-              "about",
-            ].includes(word)
-        );
 
+		// Initialize tokenizer and POS tagger
+			const tokenizer = new natural.WordTokenizer();
+			const tagger = pos();
+
+			function extractkeywords(tweet) {
+			// tokenize the tweet
+			if (tweet) {
+				const text = tweet.text
+				// Tag tokens with POS
+				const taggedTokens = tagger.tagSentence(text);
+
+				// Filter for nouns and verbs
+				const keywords = taggedTokens
+					//Try just nouns
+					.filter(token => token.pos === 'NN')
+					//.filter(token => token.pos === 'NN'|| token.pos === 'VB') // NN = noun, VB = verb
+					.map(token => token.value); // Extract the token value
+
+				//console.log(keywords);
+
+				return keywords;
+			}
+			return []
+			}
+
+      const topics = new Set();
+      const keyWordsRaw= filteredTweets
+        //.map((tweet) => tweet.text.toLowerCase())
+        .map(
+          (tweet) =>
+						extractkeywords(tweet)
+        );
+			const keyWords = keyWordsRaw.flat()
+			console.log(keyWords);
+
+			// This is exactly backwards, should use tf-idf
+			// Try filtering by excluding the most common word (tf-idf would require ingest of corpus)
+				const commonWords = [
+					"Be",
+					"Have",
+					"Do",
+					"Say",
+					"Get",
+					"Make",
+					"Go",
+					"Know",
+					"Take",
+					"See",
+					"Come",
+					"Think",
+					"Look",
+					"Want",
+					"Give",
+					"Use",
+					"Find",
+					"Tell",
+					"Ask",
+					"Work",
+					"Seem",
+					"Feel",
+					"Try",
+					"Leave",
+					"Call",
+					"Keep",
+					"Let",
+					"Begin",
+					"Show",
+					"Hear",
+					"Play",
+					"Run",
+					"Move",
+					"Live",
+					"Believe",
+					"Bring",
+					"Happen",
+					"Write",
+					"Provide",
+					"Sit",
+					"Stand",
+					"Lose",
+					"Pay",
+					"Meet",
+					"Include",
+					"Continue",
+					"Set",
+					"Learn",
+					"Change",
+					"Lead",
+					"Understand",
+					"Watch",
+					"Follow",
+					"Stop",
+					"Create",
+					"Speak",
+					"Read",
+					"Allow",
+					"Add",
+					"Spend",
+					"Grow",
+					"Open",
+					"Walk",
+					"Win",
+					"Offer",
+					"Remember",
+					"Love",
+					"Consider",
+					"Appear",
+					"Buy",
+					"Wait",
+					"Serve",
+					"Die",
+					"Send",
+					"Expect",
+					"Build",
+					"Stay",
+					"Fall",
+					"Cut",
+					"Reach",
+					"Kill",
+					"Raise",
+					"Pass",
+					"Sell",
+					"Require",
+					"Decide",
+					"Return",
+					"Explain",
+					"Hope",
+					"Develop",
+					"Carry",
+					"Break",
+					"Receive",
+					"Agree",
+					"Support",
+					"Hit",
+					"Produce",
+					"Cover",
+					"Catch",
+					"Reduce",
+					"Time",
+					"Year",
+					"People",
+					"Way",
+					"Day",
+					"Man",
+					"Thing",
+					"Woman",
+					"Life",
+					"Child",
+					"World",
+					"School",
+					"State",
+					"Family",
+					"Student",
+					"Group",
+					"Country",
+					"Problem",
+					"Hand",
+					"Part",
+					"Place",
+					"Case",
+					"Week",
+					"Company",
+					"System",
+					"Program",
+					"Question",
+					"Work",
+					"Government",
+					"Number",
+					"Night",
+					"Point",
+					"Home",
+					"Water",
+					"Room",
+					"Mother",
+					"Area",
+					"Money",
+					"Story",
+					"Fact",
+					"Month",
+					"Lot",
+					"Right",
+					"Study",
+					"Book",
+					"Eye",
+					"Job",
+					"Word",
+					"Business",
+					"Issue",
+					"Side",
+					"Kind",
+					"Head",
+					"House",
+					"Service",
+					"Friend",
+					"Father",
+					"Power",
+					"Hour",
+					"Game",
+					"Line",
+					"End",
+					"Member",
+					"Law",
+					"Car",
+					"City",
+					"Community",
+					"Name",
+					"President",
+					"Team",
+					"Minute",
+					"Idea",
+					"Kid",
+					"Body",
+					"Information",
+					"Back",
+					"Parent",
+					"Face",
+					"Others",
+					"Level",
+					"Office",
+					"Door",
+					"Health",
+					"Person",
+					"Art",
+					"War",
+					"History",
+					"Party",
+					"Result",
+					"Change",
+					"Morning",
+					"Reason",
+					"Research",
+					"Girl",
+					"Guy",
+					"Moment",
+					"Air",
+					"Teacher",
+					"Force",
+					"Education",
+					"Anything",
+					"Everything",
+					"+",
+					"/",
+					"~",
+					"%",
+					"*"
+				];
+
+			const stopWords = commonWords.map((w) => w.toLowerCase());
       const wordFrequency = {};
-      commonWords.forEach((word) => {
+			console.log(keyWords);
+			const filteredKeyWords = keyWords.filter((m) => !stopWords.includes(m))
+      filteredKeyWords.forEach((word) => {
         wordFrequency[word] = (wordFrequency[word] || 0) + 1;
       });
 
       Object.entries(wordFrequency)
         .sort(([, a], [, b]) => b - a)
-        .slice(0, 20)
+        .slice(0, 40)
         .forEach(([word]) => topics.add(word));
 
       characterData.topics = Array.from(topics);
